@@ -1,0 +1,281 @@
+---
+title: "ERP × Action-like Experience — Load Paper"
+subtitle: "Linear mixed models: condition × action_past_hours"
+date: today
+params:
+  paradigm: "active"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: 3
+    code-fold: true
+    self-contained: true
+    page-layout: full
+    theme: flatly
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+source("utils.R")
+source("config_load.R")
+
+PARADIGM    <- params$paradigm
+DATE_ERP    <- "20261015"
+DATE_ACTION <- "20261016"
+DATE_STR    <- format(Sys.Date(), "%Y%m%d")
+
+PARADIGM_REAL <- strsplit(PARADIGM, "-")[[1]][1]
+STUDY         <- if (PARADIGM_REAL == "active") "Active" else "Passive"
+
+DATA_ROOT      <- glue("L:/EEG_Flow_data/Study_EEG_Flow_{STUDY}/derivatives_v2/outputs/measures/load/")
+BEHAV_ROOT     <- glue("L:/EEG_Flow_data/Study_EEG_Flow_{STUDY}/derivatives_v2/outputs/measures/behavior/")
+OUTPUT_RESULTS <- glue("L:/EEG_Flow_data/Study_EEG_Flow_{STUDY}/derivatives_v2/outputs/stats/load/correlations_action/")
+
+
+
+dir.create(OUTPUT_RESULTS, showWarnings = FALSE, recursive = TRUE)
+
+included_participants <- if (PARADIGM_REAL == "active") INCLUDED_ACTIVE else INCLUDED_PASSIVE
+n        <- length(included_participants)
+n_source <- length(included_participants)
+
+# ==============================================================================
+# Component definitions
+# ==============================================================================
+if (PARADIGM_REAL == "active") {
+  components <- list(
+    list(label="N1 standard",    stim="standard",        window="90-130ms",  cluster="frontal",         source="stim"),
+    list(label="N1 target",      stim="target",          window="90-130ms",  cluster="frontal",         source="stim"),
+    list(label="N1 novel",       stim="novel",           window="90-150ms",  cluster="central",         source="stim"),
+    list(label="MMN target",     stim="target-standard", window="130-190ms", cluster="frontal",         source="diff"),
+    list(label="MMN novel",      stim="novel-standard",  window="120-180ms", cluster="centro_parietal", source="diff"),
+    list(label="N2 target",      stim="target",          window="180-230ms", cluster="central",         source="stim"),
+    list(label="N2 novel",       stim="novel",           window="150-220ms", cluster="central",         source="stim"),
+    list(label="P3early target", stim="target",          window="280-430ms", cluster="parietal",        source="stim"),
+    list(label="P3late target",  stim="target",          window="500-799ms", cluster="parietal",        source="stim"),
+    list(label="P3early novel",  stim="novel",           window="180-270ms", cluster="central",         source="stim"),
+    list(label="P3late novel",   stim="novel",           window="300-400ms", cluster="central",         source="stim")
+  )
+} else {
+  components <- list(
+    list(label="N1 standard",    stim="standard",          window="90-130ms",  cluster="frontal",         source="stim"),
+    list(label="N1 deviant",     stim="deviant",           window="90-130ms",  cluster="frontal",         source="stim"),
+    list(label="N1 novel",       stim="novel",             window="90-150ms",  cluster="central",         source="stim"),
+    list(label="MMN deviant",    stim="deviant-standard",  window="130-190ms", cluster="frontal",         source="diff"),
+    list(label="MMN novel",      stim="novel-standard",    window="120-180ms", cluster="centro_parietal", source="diff"),
+    list(label="P3early novel",  stim="novel",             window="190-280ms", cluster="central",         source="stim"),
+    list(label="P3late novel",   stim="novel",             window="300-380ms", cluster="central",         source="stim")
+  )
+}
+
+# ==============================================================================
+# Load ERP CSVs
+# ==============================================================================
+fname_stim <- glue("{DATE_ERP}_{PARADIGM_REAL}_{n_source}p_load_stim_raw_allch_allwin_meanamp.csv")
+df_stim    <- read.csv(file.path(DATA_ROOT, fname_stim)) %>%
+  filter(participant %in% included_participants) %>%
+  mutate(condition = factor(condition, levels = CONDITION_LEVELS))
+
+fname_diff <- glue("{DATE_ERP}_{PARADIGM_REAL}_{n_source}p_load_stim_diff_allch_allwin_meanamp.csv")
+df_diff <- read.csv(file.path(DATA_ROOT, fname_diff)) %>%
+  filter(participant %in% included_participants) %>%
+  mutate(condition = factor(condition, levels = CONDITION_LEVELS))
+
+# Action score
+fname_action <- glue("{DATE_ACTION}_{PARADIGM_REAL}_action_score.csv")
+df_action <- read.csv(file.path(BEHAV_ROOT, fname_action)) %>%
+  filter(participant %in% included_participants) %>%
+  select(participant, action_past_hours)
+
+# Median split
+median_score <- median(df_action$action_past_hours, na.rm = TRUE)
+df_action <- df_action %>%
+  mutate(experience = if_else(action_past_hours >= median_score, "high", "low"),
+         experience = factor(experience, levels = c("low", "high")))
+
+cat("Loaded:", n_distinct(df_action$participant), "participants\n")
+cat("Median action score:", round(median_score, 2), "h\n")
+cat("Low exp:", sum(df_action$experience == "low"),
+    "| High exp:", sum(df_action$experience == "high"), "\n")
+```
+
+## Overview
+
+```{r overview}
+cat(glue(
+"**Paper**: LOAD — ERP × Action Experience
+**Paradigm**: {toupper(PARADIGM)}
+**Analysis**: Linear regression: amplitude ~ condition * action_past_hours
+**Median split**: {round(median_score, 2)}h (low < median ≤ high)
+**N participants**: {n}
+**Rendered**: {DATE_STR}
+"))
+```
+
+```{r helpers}
+# Extract cluster mean amplitude for one component
+get_erp_df <- function(comp) {
+  chs <- CLUSTERS[[comp$cluster]]
+  
+  if (comp$source == "diff") {
+    stim_col <- if ("stim" %in% names(df_diff)) "stim" else "contrast"
+    df_src <- df_diff %>%
+      filter(.data[[stim_col]] == comp$stim,
+             window == comp$window,
+             ch_name %in% chs) %>%
+      group_by(participant, condition) %>%
+      summarise(mean_amp_uv = mean(mean_amp_uv, na.rm = TRUE), .groups = "drop")
+  } else {
+    df_src <- df_stim %>%
+      filter(stim == comp$stim,
+             window == comp$window,
+             ch_name %in% chs) %>%
+      group_by(participant, condition) %>%
+      summarise(mean_amp_uv = mean(mean_amp_uv, na.rm = TRUE), .groups = "drop")
+  }
+  
+  if (nrow(df_src) == 0) return(NULL)
+  
+  df_src %>%
+    left_join(df_action, by = "participant") %>%
+    mutate(condition = factor(condition, levels = CONDITION_LEVELS))
+}
+
+format_lm_apa <- function(fit, term) {
+  s    <- summary(fit)$coefficients
+  if (!term %in% rownames(s)) return(glue("{term}: not found"))
+  b    <- round(s[term, "Estimate"], 3)
+  se   <- round(s[term, "Std. Error"], 3)
+  t    <- round(s[term, "t value"], 2)
+  p    <- s[term, "Pr(>|t|)"]
+  p_str <- format_p(p)
+  glue("b = {b}, SE = {se}, t = {t}, {p_str}")
+}
+```
+
+## Results
+
+```{r analysis, results='asis'}
+summary_rows <- list()
+apa_texts    <- list()
+
+for (comp in components) {
+  label <- comp$label
+  cat(glue("\n\n### {label}\n\n"))
+  
+  df_comp <- get_erp_df(comp)
+  if (is.null(df_comp) || nrow(df_comp) == 0) {
+    cat(glue("> Warning: no data for {label}\n\n"))
+    next
+  }
+  
+  n_valid <- n_distinct(df_comp$participant)
+  cat(glue("N = {n_valid} | Window: {comp$window} | Cluster: {comp$cluster}\n\n"))
+  
+  # ── Regression: amplitude ~ condition * action_past_hours ─────────────────
+  # Center action_past_hours for interpretability
+  df_comp <- df_comp %>%
+    mutate(action_c = action_past_hours - mean(action_past_hours, na.rm = TRUE))
+  
+  fit <- lm(mean_amp_uv ~ condition * action_c, data = df_comp)
+  s   <- summary(fit)
+  
+  cat("**Linear regression:** amplitude ~ condition × action_past_hours (centered)\n\n")
+  print(knitr::kable(round(s$coefficients, 3), digits = 3))
+  cat(glue("\nR² = {round(s$r.squared, 3)}, adj. R² = {round(s$adj.r.squared, 3)}\n\n"))
+  
+  # ANOVA table for the regression
+  aov_tbl <- anova(fit)
+  cat("**ANOVA table:**\n\n")
+  print(knitr::kable(round(aov_tbl, 3), digits = 3))
+  cat("\n")
+  
+  # APA per term
+  terms <- c("conditionComplex", "action_c", "conditionComplex:action_c")
+  apa_parts <- sapply(terms, function(t) glue("{t}: {format_lm_apa(fit, t)}"))
+  names(apa_parts) <- NULL
+  apa_parts <- gsub("conditionComplex:action_c", "Load × Experience interaction", apa_parts)
+  apa_parts <- gsub("conditionComplex", "Load effect (Complex vs Simple)", apa_parts)
+  apa_parts <- gsub("action_c", "Action experience (centered)", apa_parts)
+  
+  for (ap in apa_parts) cat(glue("- {ap}\n\n"))
+  cat("\n")
+  
+  apa_texts[[label]] <- paste(
+    glue("**{label}**"),
+    paste(apa_parts, collapse = "\n\n"),
+    sep = "\n\n"
+  )
+  
+  # ── Median split ANOVA ────────────────────────────────────────────────────
+  cat("**Median split ANOVA:** amplitude ~ condition × experience\n\n")
+  
+  df_wide_ms <- df_comp %>%
+    group_by(participant, condition, experience) %>%
+    summarise(mean_amp_uv = mean(mean_amp_uv, na.rm = TRUE), .groups = "drop")
+  
+  res_ms <- anova_test(
+    data        = df_wide_ms,
+    dv          = mean_amp_uv,
+    wid         = participant,
+    within      = condition,
+    between     = experience,
+    type        = 2,
+    effect.size = "pes"
+  )
+  
+  tbl_ms <- get_anova_table(res_ms, correction = "auto")
+  print(knitr::kable(tbl_ms, digits = 3))
+  cat("\n")
+  
+  # Boxplot — median split
+  p <- df_wide_ms %>%
+    ggplot(aes(x = condition, y = mean_amp_uv, fill = experience)) +
+    geom_boxplot(color = "black", outlier.shape = 21, position = position_dodge(0.8)) +
+    scale_fill_manual(values = c("low" = "#AED6F1", "high" = "#1A5276"),
+                      name = "Experience") +
+    scale_y_reverse() +
+    labs(title    = glue("{label} | {comp$window} | {comp$cluster}"),
+         subtitle = glue("N = {n_valid} | median split = {round(median_score, 1)}h"),
+         x = NULL, y = "Mean amplitude (µV)") +
+    theme_classic(base_size = 13) + theme(legend.position = "top")
+  print(p)
+  cat("\n")
+  
+  # Summary row
+  tbl_ms_df <- data.frame(tbl_ms, stringsAsFactors = FALSE)
+  tbl_ms_df[["component"]] <- label
+  tbl_ms_df[["window"]]    <- comp$window
+  tbl_ms_df[["cluster"]]   <- comp$cluster
+  summary_rows[[label]]    <- tbl_ms_df[, c("component","window","cluster",
+                                              setdiff(names(tbl_ms_df),
+                                                      c("component","window","cluster")))]
+}
+```
+
+## Summary Table
+
+```{r summary-table}
+summary_df <- bind_rows(summary_rows)
+knitr::kable(summary_df, digits = 3,
+             caption = glue("LOAD | {toupper(PARADIGM)} | ERP × Action Experience"))
+```
+
+```{r save-summary}
+write.csv(summary_df,
+          file.path(OUTPUT_RESULTS,
+                    glue("{PARADIGM}_load_action_erp_summary_{DATE_STR}.csv")),
+          row.names = FALSE)
+cat("Summary saved.\n")
+```
+
+## APA Text Block
+
+```{r apa-block, results='asis'}
+for (label in names(apa_texts)) {
+  cat(apa_texts[[label]], "\n\n---\n\n")
+}
+```

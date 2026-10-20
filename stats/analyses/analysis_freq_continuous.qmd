@@ -1,0 +1,229 @@
+---
+title: "Frequency Band Power — Flow Paper (Continuous Epochs)"
+subtitle: "Repeated-measures ANOVA: Electrode (midline) × Condition (High vs Low Flow)"
+date: today
+params:
+  paradigm: "active"
+  paper: "flow"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    page-layout: full
+    theme: flatly
+  pdf:
+    toc: true
+    toc-depth: 3
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+source("utils.R")
+source("utils_freq.R")
+source(if (params$paper == "flow") "config_flow.R" else "config_load.R")
+
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
+
+PARADIGM   <- params$paradigm  # "active" | "passive"
+PAPER      <- params$paper      # "flow" | "load"
+ELECTRODES <- c("Fpz", "Fz", "FCz", "Cz", "CPz", "Pz", "POz", "Oz")
+BANDS      <- c("alpha", "low_beta", "high_beta", "theta")
+
+STUDY      <- if (PARADIGM == "active") "Active" else "Passive"
+DATE_STR   <- format(Sys.Date(), "%Y%m%d")
+
+PARADIGM_CFG <- list(
+  active  = list(date_source = "20261016", n_label = glue("{length(INCLUDED_ACTIVE)}p")),
+  passive = list(date_source = "20261016", n_label = glue("{length(INCLUDED_PASSIVE)}p"))
+)
+cfg <- PARADIGM_CFG[[PARADIGM]]
+
+DATA_ROOT      <- glue("L:/EEG_Flow_data/Study_EEG_Flow_{STUDY}/derivatives_v2/outputs/measures/{PAPER}/freq/continuous/")
+OUTPUT_RESULTS <- glue("L:/EEG_Flow_data/Study_EEG_Flow_{STUDY}/derivatives_v2/outputs/stats/{PAPER}/freq_continuous/")
+
+dir.create(OUTPUT_RESULTS, showWarnings = FALSE, recursive = TRUE)
+
+# Condition pooling for load paper
+# flow: UT_highflow / UT_lowflow as-is
+# load: pool oddball -> Simple, UT -> Complex
+prepare_data <- function(data) {
+  if (PAPER == "load") {
+    data %>%
+      mutate(cond = case_when(
+        cond %in% c("oddball_1", "oddball_2")    ~ "Simple",
+        cond %in% c("UT_highflow", "UT_lowflow") ~ "Complex",
+        TRUE ~ NA_character_
+      )) %>%
+      filter(!is.na(cond)) %>%
+      group_by(participant, electrode, cond) %>%
+      summarise(power = mean(power, na.rm = TRUE), .groups = "drop")
+  } else {
+    data
+  }
+}
+
+COND1 <- if (PAPER == "flow") "UT_highflow" else "Simple"
+COND2 <- if (PAPER == "flow") "UT_lowflow"  else "Complex"
+```
+
+## Overview
+
+```{r overview}
+cat(glue(
+"**Paper**: FLOW — Frequency Band Power (Continuous Epochs)  
+**Paradigm**: {toupper(PARADIGM)}  
+**Electrodes**: {paste(ELECTRODES, collapse = ', ')}  
+**Bands**: {paste(BANDS, collapse = ', ')}  
+**Rendered**: {DATE_STR}  
+"))
+```
+
+## Analysis
+
+```{r analysis, results='asis'}
+summary_rows      <- list()
+apa_texts_anova    <- list()
+apa_texts_posthoc  <- list()
+
+for (band in BANDS) {
+  cat(glue("\n## {toupper(band)} band\n\n"))
+
+  file_name <- glue("{cfg$date_source}_{cfg$n_label}_continuous_{band}_stats.csv")
+  data <- read.csv(file.path(DATA_ROOT, file_name), sep = ",")
+  data    <- prepare_data(data)
+  df_band <- filter_data_band(data, ELECTRODES, COND1, COND2)
+
+  n_valid <- n_distinct(df_band$participant)
+  cat(glue("N = {n_valid} participants\n\n"))
+
+  # ── Boxplot ──────────────────────────────────────────────────────────────
+  p <- create_band_boxplot(df_band, band)
+  print(p)
+  cat("\n")
+
+  # ── Residual diagnostics ─────────────────────────────────────────────────
+  fit     <- fit_residuals(df_band)
+  resids  <- extract_within_residuals(fit)
+  shapiro <- shapiro.test(resids)
+  cat(glue("**Shapiro-Wilk** (within-stratum residuals): W = {round(as.numeric(shapiro$statistic), 3)}, p = {round(as.numeric(shapiro$p.value), 3)}\n\n"))
+
+  # ── Frequentist ANOVA ────────────────────────────────────────────────────
+  res <- run_band_anova(df_band)
+  tbl <- get_anova_table(res)
+  cat("**Repeated-measures ANOVA:**\n\n")
+  print(knitr::kable(tbl, digits = 3))
+  cat("\n")
+
+  # ── Sphericity: Mauchly's test + Greenhouse-Geisser correction ──────────
+  # 8 electrode levels here (vs. 3 in the Castellar analysis) makes a real
+  # sphericity violation considerably more likely -- worth checking, not
+  # just assuming get_anova_table()'s automatic correction is enough without
+  # stating it explicitly. cond alone (2 levels) has no Mauchly entry --
+  # trivially satisfies sphericity, nothing to correct.
+  if (!is.null(res$`Mauchly's Test for Sphericity`)) {
+    cat("**Mauchly's Test for Sphericity:**\n\n")
+    print(knitr::kable(res$`Mauchly's Test for Sphericity`, digits = 3))
+    cat("\n")
+    cat("**Sphericity Corrections:**\n\n")
+    print(knitr::kable(res$`Sphericity Corrections`, digits = 3))
+    cat("\n")
+  }
+
+  # ── Bayesian ANOVA ───────────────────────────────────────────────────────
+  bf_anova <- run_band_anova_bayesian(df_band)
+
+  cat("**Bayesian repeated-measures ANOVA** (model comparison table):\n\n")
+  print(knitr::kable(bf_anova$bf_df, digits = 3))
+  cat("\n")
+
+  for (i in seq_len(nrow(tbl))) {
+    row  <- tbl[i, ]
+    term <- row$Effect
+    p_val <- as.numeric(row$p)
+    p_str <- format_p(p_val)
+    bf_str <- if (term %in% names(bf_anova$lookup)) format_bf(bf_anova$lookup[[term]]) else "NA"
+    sphericity_note <- format_sphericity_note(res, term)
+    apa <- glue("{term}: F({row$DFn}, {row$DFd}) = {round(row$F, 2)}, {p_str}, ",
+               "\u03b7\u00b2_p = {round(as.numeric(row$pes), 3)}, \u03b7\u00b2_g = {round(as.numeric(row$ges), 3)}, ",
+               "BF10 = {bf_str} {sphericity_note}")
+    cat(glue("- {apa}\n"))
+    apa_texts_anova[[glue("{band}_{term}")]] <- apa
+  }
+  cat("\n")
+
+  # ── Posthoc: frequentist ─────────────────────────────────────────────────
+  cat("**Post-hoc** (paired t-tests, Bonferroni):\n\n")
+  posthoc <- df_band %>%
+    group_by(electrode) %>%
+    pairwise_t_test(power ~ cond, paired = TRUE, p.adjust.method = "bonferroni") %>%
+    add_significance("p.adj")
+
+  # ── Posthoc: Bayesian ────────────────────────────────────────────────────
+  bf_posthoc <- run_band_posthoc_bayesian(df_band, COND1, COND2)
+  posthoc <- posthoc %>% left_join(bf_posthoc, by = "electrode")
+
+  print(knitr::kable(posthoc, digits = 3))
+  cat("\n")
+
+  for (i in seq_len(nrow(posthoc))) {
+    row  <- posthoc[i, ]
+    elec <- as.character(row$electrode)
+
+    stats <- df_band %>%
+      filter(electrode == elec) %>%
+      group_by(cond) %>%
+      summarise(M = round(mean(power, na.rm = TRUE), 2), SD = round(sd(power, na.rm = TRUE), 2), .groups = "drop")
+
+    m1  <- stats$M[stats$cond  == COND1]; sd1 <- stats$SD[stats$cond == COND1]
+    m2  <- stats$M[stats$cond  == COND2];  sd2 <- stats$SD[stats$cond == COND2]
+    dval <- round(calc_cohens_d_posthoc(df_band, COND1, COND2, elec, "power"), 2)
+    p_str <- format_p(as.numeric(row$p.adj))
+
+    apa <- glue(
+      "{elec}: High Flow (M={m1}, SD={sd1}) vs Low Flow (M={m2}, SD={sd2}), ",
+      "t({row$df}) = {round(row$statistic, 2)}, {p_str}, d = {dval}, BF10 = {format_bf(row$BF10)}"
+    )
+    cat(glue("- {apa}\n"))
+    apa_texts_posthoc[[glue("{band}_{elec}")]] <- apa
+
+    summary_rows[[glue("{band}_{elec}")]] <- tibble(
+      Band = band, Electrode = elec,
+      Mean_High = m1, SD_High = sd1, Mean_Low = m2, SD_Low = sd2,
+      t = round(row$statistic, 3), df = row$df, p = round(as.numeric(row$p.adj), 4),
+      d = dval, BF10 = round(row$BF10, 3), BF01 = round(row$BF01, 3)
+    )
+  }
+  cat("\n")
+}
+```
+
+## Summary Table
+
+```{r summary-table}
+summary_df <- bind_rows(summary_rows)
+knitr::kable(summary_df, digits = 3, caption = glue("{toupper(PAPER)} | {toupper(PARADIGM)} | Frequency Power (Continuous)"))
+```
+
+```{r save-summary}
+out_fname <- file.path(OUTPUT_RESULTS, glue("{PARADIGM}_{PAPER}_freq_continuous_summary_{DATE_STR}.csv"))
+write.csv(summary_df, out_fname, row.names = FALSE)
+cat("Saved summary ->", out_fname, "\n")
+```
+
+## APA Text Block
+
+*Ready to copy-paste into manuscript.*
+
+```{r apa-block, results='asis'}
+cat("### Omnibus ANOVA\n\n")
+for (label in names(apa_texts_anova)) cat(apa_texts_anova[[label]], "\n\n")
+
+cat("### Post-hoc\n\n")
+for (label in names(apa_texts_posthoc)) cat(apa_texts_posthoc[[label]], "\n\n")
+```

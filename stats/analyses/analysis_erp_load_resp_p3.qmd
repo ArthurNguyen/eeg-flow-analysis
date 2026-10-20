@@ -1,0 +1,276 @@
+---
+title: "ERP Analysis - Load Paper (Response-Locked, P3)"
+subtitle: "Repeated-measures ANOVA: Simple vs Complex — Mean amplitude across windows"
+date: today
+params:
+  cohort: "full"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    page-layout: full
+    theme: flatly
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+source("utils.R")
+source("config_load.R")
+
+USE_ANOVA <- TRUE  # TRUE = 2-way RM ANOVA (condition x electrode) | FALSE = paired t-test
+
+PARADIGM    <- "active"
+LOCK        <- "resp"
+DATE_SOURCE <- "20261015"
+CSD_LABEL   <- "NOCSD"
+BC_LABEL    <- "bc-200-100"
+CLUSTER     <- c("P1", "Pz", "P2", "POz")
+
+OUTPUT_RESULTS <- "L:/EEG_Flow_data/Study_EEG_Flow_Active/derivatives_v2/outputs/stats/load/resp_p3/"
+DATA_ROOT      <- "L:/EEG_Flow_data/Study_EEG_Flow_Active/derivatives_v2/outputs/measures/load/"
+DATE_STR       <- format(Sys.Date(), "%Y%m%d")
+
+dir.create(OUTPUT_RESULTS, showWarnings = FALSE, recursive = TRUE)
+
+included_participants <- if (params$cohort == "n35") INCLUDED_ACTIVE_N35 else INCLUDED_ACTIVE
+n        <- length(included_participants)
+n_source <- length(INCLUDED_ACTIVE)
+
+fname <- glue("{DATE_SOURCE}_{PARADIGM}_{n_source}p_load_resp_{BC_LABEL}_{CSD_LABEL}_p3.csv")
+path  <- file.path(DATA_ROOT, fname)
+
+df_all <- read.csv(path) %>%
+  filter(participant %in% included_participants,
+         ch_name %in% CLUSTER,
+         window == "-100-100ms") %>% 
+  mutate(condition = factor(condition, levels = CONDITION_LEVELS),
+         ch_name   = factor(ch_name,   levels = CLUSTER))
+
+df_avg <- df_all %>%
+  dplyr::group_by(participant, condition, window) %>%
+  dplyr::summarise(mean_amp_uv = mean(mean_amp_uv, na.rm = TRUE), .groups = "drop")
+
+cat("Loaded:", length(unique(df_all$participant)), "participants\n")
+cat("Windows:", paste(sort(unique(df_all$window)), collapse=", "), "\n")
+```
+
+## Overview
+
+```{r overview}
+cat(glue(
+"**Paper**: LOAD — Response-Locked P3
+**Paradigm**: ACTIVE
+**Lock**: Response
+**CSD**: {CSD_LABEL} | **Baseline**: {BC_LABEL}
+**Cluster**: {paste(CLUSTER, collapse=', ')}
+**Analysis**: {if (USE_ANOVA) '2-way RM ANOVA (condition x electrode)' else 'Paired t-test'}
+**Windows tested**: {paste(sort(unique(df_avg$window)), collapse=' | ')}
+**Conditions**: {paste(CONDITION_LEVELS, collapse = ' vs ')}
+**N participants**: {n}
+**Rendered**: {DATE_STR}
+"))
+```
+
+## Statistical Approach
+
+For each window, we test data from all electrodes in the parietal cluster (P1, Pz, P2, POz) using a 2 (condition: Simple, Complex) × electrode repeated-measures ANOVA. The electrode main effect and the electrode × condition interaction are reported for completeness; neither is a confirmatory hypothesis here.
+
+The condition main effect is the confirmatory test. Because condition has exactly two levels, its frequentist F-test is mathematically equivalent to a paired t-test on the same data averaged across cluster electrodes — F(1, df) = t(df)². We therefore report the Bayesian companion to the condition effect as a paired t-test (`BayesFactor::ttestBF`, JZS prior, r = .707) on the electrode-averaged data per participant, condition, and window.
+
+## Results per window
+
+```{r analysis, results='asis'}
+summary_rows <- list()
+apa_texts    <- list()
+
+windows <- sort(unique(df_all$window))
+
+for (win in windows) {
+  cat(glue("\n### {win}\n\n"))
+
+  df_win     <- df_all[df_all$window == win, ]
+  df_win_avg <- df_avg[df_avg$window == win, ]
+  n_valid    <- length(unique(df_win$participant))
+  cat(glue("N = {n_valid} participants\n\n"))
+
+  # Boxplot on cluster average
+  df_win_avg[["condition"]] <- factor(df_win_avg[["condition"]], levels = CONDITION_LEVELS)
+  p <- ggplot(df_win_avg, aes(x = condition, y = mean_amp_uv, fill = condition)) +
+    geom_boxplot(color = "black", outlier.shape = 21) +
+    scale_fill_manual(values = CONDITION_COLORS) +
+    labs(title    = glue("Mean Amplitude — {win}"),
+         subtitle = glue("N = {n_valid} | {paste(CLUSTER, collapse='+')}"),
+         x = NULL, y = "Mean amplitude (uV)") +
+    theme_classic(base_size = 13) + theme(legend.position = "none")
+  print(p); cat("\n")
+
+  label_suffix <- gsub("[^a-zA-Z0-9]", "_", win)
+
+  if (USE_ANOVA) {
+    df_win[["condition"]] <- factor(df_win[["condition"]], levels = CONDITION_LEVELS)
+    df_win[["ch_name"]]   <- factor(df_win[["ch_name"]],   levels = CLUSTER)
+
+    # Normality on residuals
+    res_aov <- aov(mean_amp_uv ~ ch_name * condition, data = df_win)
+    resids  <- residuals(res_aov)
+    shapiro <- shapiro.test(resids)
+    cat(glue("**Shapiro-Wilk** (residuals): W = {round(shapiro$statistic[[1]], 3)}, p = {round(shapiro$p.value, 3)}\n\n"))
+
+    res_rm <- anova_test(
+      data        = df_win,
+      dv          = mean_amp_uv,
+      wid         = participant,
+      within      = c("ch_name", "condition"),
+      type        = 2,
+      effect.size = "pes"
+    )
+
+    tbl     <- get_anova_table(res_rm, correction = "auto")
+    gg      <- res_rm$`Sphericity Corrections`
+    mauchly <- res_rm$`Mauchly's Test for Sphericity`
+
+    cat("**Repeated-measures ANOVA:**\n\n")
+    print(knitr::kable(tbl, digits = 3)); cat("\n")
+
+    if (!is.null(mauchly) && nrow(mauchly) > 0) {
+      cat("**Mauchly's Test:**\n\n")
+      print(knitr::kable(mauchly, digits = 3)); cat("\n")
+    }
+    if (!is.null(gg)) {
+      cat("**Sphericity Corrections:**\n\n")
+      print(knitr::kable(gg, digits = 3)); cat("\n")
+    }
+
+    # Bayesian condition effect (collapsed across electrodes)
+    df_wide_cond <- df_win_avg %>%
+      pivot_wider(id_cols = participant, names_from = condition,
+                  values_from = mean_amp_uv, names_prefix = "mean_amp_uv.") %>%
+      mutate(across(starts_with("mean_amp_uv."), as.numeric)) %>%
+      drop_na()
+
+    cond_bf <- tryCatch({
+      run_paired_ttest(df_wide_cond, CONDITION_LEVELS)
+    }, error = function(e) {
+      cat(glue("> Warning: Bayesian condition test failed for {win}: {e$message}\n\n"))
+      NULL
+    })
+
+    if (!is.null(cond_bf)) {
+      cat(glue("**Bayesian paired t-test (condition)**: BF10 = {format_bf(cond_bf$bf10)}, BF01 = {format_bf(cond_bf$bf01)}\n\n"))
+    }
+
+    # APA
+    apa_parts <- character(nrow(tbl))
+    for (i in seq_len(nrow(tbl))) {
+      term  <- tbl[["Effect"]][i]
+      f_val <- round(tbl[["F"]][i], 2)
+      df1   <- tbl[["DFn"]][i]
+      df2   <- tbl[["DFd"]][i]
+      p_val <- tbl[["p"]][i]
+      eta   <- round(tbl[["pes"]][i], 3)
+      p_str <- format_p(p_val)
+      gg_note <- ""
+      if (!is.null(gg) && term %in% gg[["Effect"]]) {
+        idx <- which(gg[["Effect"]] == term)
+        eps <- round(gg[["GGe"]][idx], 2)
+        if (!is.null(mauchly)) {
+          m_idx <- which(mauchly[["Effect"]] == term)
+          if (length(m_idx) > 0 && mauchly[["p"]][m_idx] < .05)
+            gg_note <- glue(", GGe corrected, epsilon = {eps}")
+        }
+      }
+      bf_note <- ""
+      if (term == "condition" && !is.null(cond_bf)) {
+        bf_note <- glue(", BF10 = {format_bf(cond_bf$bf10)}")
+      }
+      apa_parts[i] <- glue("{term}: F({df1}, {df2}) = {f_val}, {p_str}, pes = {eta}{gg_note}{bf_note}")
+      cat(glue("- {apa_parts[i]}\n\n"))
+    }
+    cat("\n")
+
+    apa <- paste(apa_parts, collapse = "; ")
+
+    tbl_df <- data.frame(tbl, stringsAsFactors = FALSE)
+    tbl_df[["window"]]     <- win
+    tbl_df[["gg_epsilon"]] <- NA_real_
+    if (!is.null(gg)) {
+      for (eff in gg[["Effect"]]) {
+        idx <- which(tbl_df[["Effect"]] == eff)
+        if (length(idx) > 0)
+          tbl_df[["gg_epsilon"]][idx] <- round(gg[["GGe"]][gg[["Effect"]] == eff], 3)
+      }
+    }
+    tbl_df[["BF10"]] <- NA_real_
+    tbl_df[["BF01"]] <- NA_real_
+    if (!is.null(cond_bf)) {
+      idx <- which(tbl_df[["Effect"]] == "condition")
+      if (length(idx) > 0) {
+        tbl_df[["BF10"]][idx] <- round(cond_bf$bf10, 3)
+        tbl_df[["BF01"]][idx] <- round(cond_bf$bf01, 3)
+      }
+    }
+    summary_rows[[win]] <- tbl_df
+
+  } else {
+    # Paired t-test fallback
+    df_wide <- df_win_avg %>%
+      pivot_wider(id_cols = participant, names_from = condition,
+                  values_from = mean_amp_uv, names_prefix = "mean_amp_uv.") %>%
+      mutate(across(starts_with("mean_amp_uv."), as.numeric)) %>%
+      drop_na()
+
+    results <- run_paired_ttest(df_wide, CONDITION_LEVELS)
+    t_res   <- results$t; d_res <- results$d
+    bf10    <- results$bf10; bf01 <- results$bf01
+    df_long <- results$df_long
+
+    col_a <- paste0("mean_amp_uv.", CONDITION_LEVELS[1])
+    col_b <- paste0("mean_amp_uv.", CONDITION_LEVELS[2])
+    shapiro <- shapiro.test(df_wide[[col_a]] - df_wide[[col_b]])
+    cat(glue("**Shapiro-Wilk**: W = {round(shapiro$statistic[[1]], 3)}, p = {round(shapiro$p.value, 3)}\n\n"))
+
+    cat(glue("**Bayesian paired t-test**: BF10 = {format_bf(bf10)}, BF01 = {format_bf(bf01)}\n\n"))
+
+    means <- c(mean(df_wide[[col_a]], na.rm=TRUE), mean(df_wide[[col_b]], na.rm=TRUE))
+    sds   <- c(sd(df_wide[[col_a]],  na.rm=TRUE), sd(df_wide[[col_b]],  na.rm=TRUE))
+
+    apa <- apa_ttest(t_res, d_res, bf10, glue("Mean Amplitude {win}"), "parietal", "", "",
+                     CONDITION_LEVELS, means, sds)
+    summary_rows[[win]] <- build_summary_row(
+      glue("Mean Amplitude {win}"), "parietal", "", "",
+      CONDITION_LEVELS, means, sds, t_res, d_res, bf10, bf01
+    )
+  }
+
+  cat(glue("**APA:** {apa}\n\n"))
+  apa_texts[[win]] <- apa
+}
+```
+
+## Summary Table
+
+```{r summary-table}
+summary_df <- bind_rows(summary_rows)
+summary_df <- summary_df[, c("window", setdiff(names(summary_df), "window"))]
+knitr::kable(summary_df, digits = 3,
+             caption = "LOAD | ACTIVE | Response-Locked P3 | Parietal cluster")
+```
+
+```{r save-summary}
+write.csv(summary_df,
+          file.path(OUTPUT_RESULTS, glue("active_load_resp_p3_summary_{DATE_STR}.csv")),
+          row.names = FALSE)
+cat("Summary saved.\n")
+```
+
+## APA Text Block
+
+```{r apa-block, results='asis'}
+for (win in names(apa_texts)) {
+  cat(glue("**{win}**: {apa_texts[[win]]}"), "\n\n")
+}
+```

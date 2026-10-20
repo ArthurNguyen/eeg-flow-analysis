@@ -1,0 +1,202 @@
+---
+title: "Behavioral Analysis — Load Paper (Oddball Response)"
+subtitle: "Paired t-tests: Simple vs Complex — RT, CV, d-prime, Errors"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    page-layout: full
+    theme: flatly
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+source("utils.R")
+source("config_load.R")
+
+PARADIGM    <- "active"
+DATE_SOURCE <- "20261016"
+DATE_STR    <- format(Sys.Date(), "%Y%m%d")
+
+DPRIME_COL_WITH    <- "d_withnovels"
+DPRIME_COL_WITHOUT <- "d_nonovels"
+CONDITIONS         <- c("Simple", "Complex")
+
+STUDY          <- "Active"
+DATA_ROOT      <- glue("L:/EEG_Flow_data/Study_EEG_Flow_{STUDY}/derivatives_v2/outputs/measures/behavior/")
+OUTPUT_RESULTS <- glue("L:/EEG_Flow_data/Study_EEG_Flow_{STUDY}/derivatives_v2/outputs/stats/load/behavior/")
+
+dir.create(OUTPUT_RESULTS, showWarnings = FALSE, recursive = TRUE)
+
+included_participants <- INCLUDED_ACTIVE
+n <- length(included_participants)
+
+load_and_filter <- function(fname) {
+  read.csv(file.path(DATA_ROOT, fname)) %>%
+    filter(participant %in% included_participants) %>%
+    rename(Participant = participant, Condition = condition)
+}
+
+df_rt     <- load_and_filter(glue("{DATE_SOURCE}_active_oddball_rt_load.csv"))
+df_dprime <- load_and_filter(glue("{DATE_SOURCE}_active_oddball_dprime_load.csv"))
+df_errors <- load_and_filter(glue("{DATE_SOURCE}_active_oddball_errors_load.csv"))
+
+df_dprime_with    <- df_dprime %>% rename(dprime = all_of(DPRIME_COL_WITH))
+df_dprime_without <- df_dprime %>% rename(dprime = all_of(DPRIME_COL_WITHOUT))
+
+for (df in list(df_rt, df_dprime, df_errors)) {
+  cat("N:", n_distinct(df$Participant), "| Conditions:", paste(sort(unique(df$Condition)), collapse=", "), "\n")
+}
+```
+
+## Overview
+
+```{r overview}
+cat(glue(
+"**Paper**: LOAD — Oddball Response
+**Paradigm**: ACTIVE
+**Conditions**: {paste(CONDITIONS, collapse = ' vs ')}
+**N participants**: {n}
+**Rendered**: {DATE_STR}
+"))
+```
+
+```{r helper}
+run_ttest_behav <- function(df, dv, dv_label, conditions, label_suffix) {
+  cat(glue("\n### {dv_label}\n\n"))
+
+  df_filtered <- df %>%
+    filter(Condition %in% conditions) %>%
+    mutate(Condition = factor(Condition, levels = conditions)) %>%
+    select(Participant, Condition, value = all_of(dv))
+
+  df_wide <- df_filtered %>%
+    pivot_wider(id_cols = Participant, names_from = Condition, values_from = value) %>%
+    drop_na(all_of(conditions))
+
+  if (nrow(df_wide) < 3) {
+    cat(glue("> Warning: not enough data for {dv_label}\n\n"))
+    return(NULL)
+  }
+
+  col_a <- conditions[1]; col_b <- conditions[2]
+  df_wide <- df_wide %>% mutate(dif = .data[[col_a]] - .data[[col_b]])
+  n_valid <- nrow(df_wide)
+
+  shapiro <- shapiro.test(df_wide$dif)
+
+  t_res <- t.test(df_wide[[col_a]], df_wide[[col_b]], paired = TRUE)
+  d_res <- df_filtered %>% cohens_d(value ~ Condition, paired = TRUE)
+
+  bf_res <- ttestBF(x = df_wide[[col_a]], y = df_wide[[col_b]], paired = TRUE)
+  bf10   <- as.numeric(extractBF(bf_res)$bf)
+  bf01   <- 1 / bf10
+
+  summary_stats <- df_filtered %>%
+    group_by(Condition) %>%
+    summarise(M = round(mean(value, na.rm=TRUE), 2),
+              SD = round(sd(value, na.rm=TRUE), 2), .groups="drop")
+
+  means <- setNames(summary_stats$M,  summary_stats$Condition)
+  sds   <- setNames(summary_stats$SD, summary_stats$Condition)
+
+  t_val  <- round(t_res$statistic, 2)
+  df_val <- t_res$parameter
+  p_val  <- t_res$p.value
+  p_str  <- format_p(p_val)
+  d_val  <- round(abs(d_res$effsize), 2)
+  d_mag  <- interpret_d(d_val)
+
+  apa <- glue(
+    "{dv_label}: {conditions[1]} (M = {means[conditions[1]]}, SD = {sds[conditions[1]]}) vs. ",
+    "{conditions[2]} (M = {means[conditions[2]]}, SD = {sds[conditions[2]]}); ",
+    "t({df_val}) = {t_val}, {p_str}, d = {d_val} ({d_mag}), BF10 = {format_bf(bf10)}."
+  )
+
+  cat(glue("N = {n_valid} | Shapiro-Wilk: W = {round(shapiro$statistic, 3)}, p = {round(shapiro$p.value, 3)}\n\n"))
+  cat(glue("**APA:** {apa}\n\n"))
+
+  list(
+    summary = tibble(
+      Measure = dv_label,
+      !!glue("Mean_{conditions[1]}") := means[conditions[1]],
+      !!glue("SD_{conditions[1]}")   := sds[conditions[1]],
+      !!glue("Mean_{conditions[2]}") := means[conditions[2]],
+      !!glue("SD_{conditions[2]}")   := sds[conditions[2]],
+      t = t_val, df = df_val, p = p_val, p_str = p_str,
+      d = d_val, d_magnitude = d_mag,
+      BF10 = round(bf10, 2), BF01 = round(bf01, 2)
+    ),
+    apa = apa
+  )
+}
+```
+
+## Behavioral measures — with novels
+
+```{r rt, results='asis'}
+summary_rows <- list()
+apa_texts    <- list()
+
+res <- run_ttest_behav(df_rt, "rt_mean", "Reaction Time (ms)", CONDITIONS, "load_rt")
+if (!is.null(res)) { summary_rows[["rt"]] <- res$summary; apa_texts[["rt"]] <- res$apa }
+```
+
+```{r cv, results='asis'}
+res <- run_ttest_behav(df_rt, "rt_cv", "Coefficient of Variation RT (%)", CONDITIONS, "load_cv")
+if (!is.null(res)) { summary_rows[["cv"]] <- res$summary; apa_texts[["cv"]] <- res$apa }
+```
+
+```{r dprime-with, results='asis'}
+res <- run_ttest_behav(df_dprime_with, "dprime", "d-prime (with novels)", CONDITIONS, "load_dprime_with")
+if (!is.null(res)) { summary_rows[["dprime_with"]] <- res$summary; apa_texts[["dprime_with"]] <- res$apa }
+```
+
+```{r errors-with, results='asis'}
+res <- run_ttest_behav(df_errors, "pct_errors", "Errors % (with novels)", CONDITIONS, "load_errors_with")
+if (!is.null(res)) { summary_rows[["errors_with"]] <- res$summary; apa_texts[["errors_with"]] <- res$apa }
+```
+
+## Behavioral measures — without novels
+
+```{r dprime-without, results='asis'}
+res <- run_ttest_behav(df_dprime_without, "dprime", "d-prime (without novels)", CONDITIONS, "load_dprime_without")
+if (!is.null(res)) { summary_rows[["dprime_without"]] <- res$summary; apa_texts[["dprime_without"]] <- res$apa }
+```
+
+```{r errors-without, results='asis'}
+res <- run_ttest_behav(df_errors, "pct_errors_nonovels", "Errors % (without novels)", CONDITIONS, "load_errors_without")
+if (!is.null(res)) { summary_rows[["errors_without"]] <- res$summary; apa_texts[["errors_without"]] <- res$apa }
+```
+
+## Summary Table
+
+```{r summary-table}
+summary_df <- bind_rows(summary_rows)
+knitr::kable(summary_df, digits=3, caption = "LOAD | ACTIVE | Oddball Response")
+```
+
+```{r save-summary}
+write.csv(summary_df,
+          file.path(OUTPUT_RESULTS, glue("active_load_oddball_summary_{DATE_STR}.csv")),
+          row.names=FALSE)
+cat("Summary saved.\n")
+```
+
+## APA Text Block
+
+```{r apa-block, results='asis'}
+cat("### With novels\n\n")
+for (m in c("rt", "cv", "dprime_with", "errors_with")) {
+  if (m %in% names(apa_texts)) cat(glue("**{m}**: {apa_texts[[m]]}"), "\n\n")
+}
+cat("\n### Without novels\n\n")
+for (m in c("dprime_without", "errors_without")) {
+  if (m %in% names(apa_texts)) cat(glue("**{m}**: {apa_texts[[m]]}"), "\n\n")
+}
+```

@@ -1,0 +1,176 @@
+---
+title: "ERP Analysis - Flow Paper (Response-Locked, Castellar)"
+subtitle: "Paired t-tests: High Flow vs Low Flow — Peak-to-Peak amplitude and latency"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    page-layout: full
+    theme: flatly
+  pdf:
+    toc: true
+    toc-depth: 3
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+source("utils.R")
+source("config_flow.R")
+
+PARADIGM    <- "active"
+LOCK        <- "resp"
+DATE_SOURCE <- "20261015"
+CSD_LABEL   <- "CSD"
+BC_LABEL    <- "bc-200-0"
+
+DATA_ROOT      <- "L:/EEG_Flow_data/Study_EEG_Flow_Active/derivatives_v2/outputs/measures/flow/"
+OUTPUT_RESULTS <- "L:/EEG_Flow_data/Study_EEG_Flow_Active/derivatives_v2/outputs/stats/flow/castellar/"
+DATE_STR       <- format(Sys.Date(), "%Y%m%d")
+
+dir.create(OUTPUT_RESULTS, showWarnings = FALSE, recursive = TRUE)
+
+n         <- length(INCLUDED_ACTIVE)
+csv_fname <- glue("{DATE_SOURCE}_{PARADIGM}_{n}p_flow_resp_{BC_LABEL}_{CSD_LABEL}_castellar_p2p.csv")
+csv_path  <- file.path(DATA_ROOT, csv_fname)
+
+df_all <- read.csv(csv_path) %>%
+  filter(participant %in% INCLUDED_ACTIVE) %>%
+  mutate(condition = factor(condition, levels = CONDITION_LEVELS))
+
+cat("Loaded:", nrow(df_all), "rows |", n_distinct(df_all$participant), "participants\n")
+cat("Configs:", paste(unique(df_all$channel_config), collapse=", "), "\n")
+cat("Conditions:", paste(unique(df_all$condition), collapse=", "), "\n")
+```
+
+## Overview
+
+```{r overview}
+cat(glue(
+"**Paper**: FLOW — Response-Locked (Castellar)  
+**Paradigm**: ACTIVE  
+**Lock**: Response  
+**CSD**: {CSD_LABEL} | **Baseline**: {BC_LABEL}  
+**Conditions**: {paste(CONDITION_LEVELS, collapse = ' vs ')}  
+**N participants**: {n}  
+**Rendered**: {DATE_STR}  
+"))
+```
+
+```{r analysis-functions}
+run_ttest_block <- function(df, config_label, dv, dv_label, label_suffix) {
+  cat(glue("\n### {dv_label}\n\n"))
+
+  df_cond <- df %>%
+    filter(channel_config == config_label) %>%
+    select(participant, condition, value = all_of(dv)) %>%
+    filter(!is.na(value))
+
+  if (nrow(df_cond) == 0) {
+    cat(glue("> Warning: No data for {config_label} {dv}\n\n"))
+    return(NULL)
+  }
+
+  col_a <- paste0("value.", CONDITION_LEVELS[1])
+  col_b <- paste0("value.", CONDITION_LEVELS[2])
+
+  df_wide <- df_cond %>%
+    pivot_wider(id_cols = participant, names_from = condition,
+                values_from = value, names_prefix = "value.",
+                values_fn = mean) %>%
+    mutate(across(starts_with("value."), as.numeric)) %>%
+    drop_na(all_of(c(col_a, col_b)))
+
+  n_valid <- nrow(df_wide)
+  cat(glue("N = {n_valid} participants\n\n"))
+
+  # Boxplot
+  df_long <- df_wide %>%
+    pivot_longer(cols = starts_with("value."), names_to = "condition",
+                 values_to = "value") %>%
+    mutate(condition = factor(gsub("value\\.", "", condition),
+                              levels = CONDITION_LEVELS))
+
+  p <- df_long %>%
+    ggplot(aes(x = condition, y = value, fill = condition)) +
+    geom_boxplot(color = "black", outlier.shape = 21) +
+    scale_fill_manual(values = CONDITION_COLORS) +
+    labs(title    = glue("{dv_label} — {config_label}"),
+         subtitle = glue("N = {n_valid}"),
+         x = NULL, y = dv_label) +
+    theme_classic(base_size = 13) +
+    theme(legend.position = "none")
+  print(p)
+  cat("\n")
+
+  # Assumption check
+  diffs   <- df_wide[[col_a]] - df_wide[[col_b]]
+  shapiro <- shapiro.test(diffs)
+  cat(glue("**Shapiro-Wilk**: W = {round(as.numeric(shapiro$statistic), 3)}, p = {round(as.numeric(shapiro$p.value), 3)}\n\n"))
+
+  # T-test
+  t_res  <- t.test(df_wide[[col_a]], df_wide[[col_b]], paired = TRUE)
+  bf_res <- ttestBF(x = df_wide[[col_a]], y = df_wide[[col_b]], paired = TRUE)
+  bf10   <- as.numeric(extractBF(bf_res)$bf)
+  bf01   <- 1 / bf10
+
+  df_long2 <- df_wide %>%
+    pivot_longer(cols = starts_with("value."), names_to = "condition", values_to = "value") %>%
+    mutate(condition = factor(gsub("value\\.", "", condition), levels = CONDITION_LEVELS))
+  d_res <- df_long2 %>% cohens_d(value ~ condition, paired = TRUE)
+
+  means <- c(mean(df_wide[[col_a]], na.rm=TRUE), mean(df_wide[[col_b]], na.rm=TRUE))
+  sds   <- c(sd(df_wide[[col_a]],  na.rm=TRUE), sd(df_wide[[col_b]],  na.rm=TRUE))
+
+  apa <- apa_ttest(t_res, d_res, bf10, dv_label, config_label, "", "",
+                   CONDITION_LEVELS, means, sds)
+  cat(glue("**APA:** {apa}\n\n"))
+
+  list(
+    summary = build_summary_row(dv_label, config_label, "", "",
+                                CONDITION_LEVELS, means, sds, t_res, d_res, bf10, bf01),
+    apa     = apa
+  )
+}
+```
+
+## FCz — 0-300ms
+
+```{r fcz-0-300, results='asis'}
+summary_rows <- list()
+apa_texts    <- list()
+
+res <- run_ttest_block(df_all, "FCz_0-300", "p2p_amp_uv", "P2P Amplitude (uV/m2)", "FCz_0-300_amp")
+if (!is.null(res)) { summary_rows[["FCz_0-300_amp"]] <- res$summary; apa_texts[["FCz_0-300_amp"]] <- res$apa }
+
+res <- run_ttest_block(df_all, "FCz_0-300", "p2p_lat_ms", "P2P Latency (ms)", "FCz_0-300_lat")
+if (!is.null(res)) { summary_rows[["FCz_0-300_lat"]] <- res$summary; apa_texts[["FCz_0-300_lat"]] <- res$apa }
+```
+
+## Summary Table
+
+```{r summary-table}
+summary_df <- bind_rows(summary_rows)
+knitr::kable(summary_df, digits = 3,
+             caption = "FLOW | ACTIVE | Response-Locked | Castellar")
+```
+
+```{r save-summary}
+out_fname <- glue("{OUTPUT_RESULTS}active_flow_castellar_resp_summary_{DATE_STR}.csv")
+write.csv(summary_df, out_fname, row.names = FALSE)
+cat("Saved summary ->", out_fname, "\n")
+```
+
+## APA Text Block
+
+*Ready to copy-paste into manuscript.*
+
+```{r apa-block, results='asis'}
+for (label in names(apa_texts)) {
+  cat(glue("**{label}**: {apa_texts[[label]]}"), "\n\n")
+}
+```

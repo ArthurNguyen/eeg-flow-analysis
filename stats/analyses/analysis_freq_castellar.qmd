@@ -1,0 +1,232 @@
+---
+title: "Frequency Band Power — Flow Paper (à la Castellar)"
+subtitle: "Repeated-measures ANOVA: Electrode (Fz × FCz × Cz) × Condition (High vs Low Flow)"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    page-layout: full
+    theme: flatly
+  pdf:
+    toc: true
+    toc-depth: 3
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+source("utils.R")
+source("utils_freq.R")
+source("config_flow.R")
+
+# ==============================================================================
+# CONFIGURATION — fixed for this analysis
+# ==============================================================================
+
+ELECTRODES  <- c("Fz", "FCz", "Cz")
+BANDS       <- c("alpha", "beta", "theta")
+METHODS <- c("castellar_exact", "castellar_trial")
+# Formerly included evoked_welch_nooverlap / trial_welch_nooverlap for validation --
+# confirmed equivalent to the _exact versions after the crop fix (Fz_ratio=1.0).
+# Kept commented rather than deleted; re-enable if the pipeline changes and the
+# equivalence needs re-checking.
+
+DATE_SOURCE <- "20261016"
+
+# Matches save_stats_csv()'s naming convention in the regeneration notebook:
+# {date}_{PARADIGM}_{n}p_{PAPER}_CastellarBand-{band}_statsnorm.csv
+# Castellar methods are active-only by construction (response-locked --
+# passive participants have no response event to lock to), so this is a
+# hard constraint, not a placeholder to swap to "passive" later.
+PARADIGM <- "active"
+PAPER    <- "flow"
+
+DATA_ROOT      <- "L:/EEG_Flow_data/Study_EEG_Flow_Active/derivatives_v2/outputs/measures/flow/freq/castellar/"
+OUTPUT_RESULTS <- "L:/EEG_Flow_data/Study_EEG_Flow_Active/derivatives_v2/outputs/stats/flow/freq_castellar/"
+
+
+DATE_STR       <- format(Sys.Date(), "%Y%m%d")
+
+
+
+```
+
+## Overview
+
+```{r overview}
+cat(glue(
+"**Paper**: FLOW — Frequency Band Power (à la Castellar)  
+**Paradigm**: ACTIVE  
+**Electrodes**: {paste(ELECTRODES, collapse = ', ')}  
+**Bands**: {paste(BANDS, collapse = ', ')}  
+**Methods**: {paste(METHODS, collapse = ', ')}  
+**Rendered**: {DATE_STR}  
+"))
+```
+
+## Analysis
+
+```{r analysis, results='asis'}
+summary_rows      <- list()
+apa_texts_anova    <- list()
+apa_texts_posthoc  <- list()
+
+for (band in BANDS) {
+  cat(glue("\n## {toupper(band)} band\n\n"))
+
+  # One combined file per band -- both methods already inside, distinguished
+  # by the "method" column. Power is already log10-transformed at source
+  # (log10(power + 1e-20), per save_stats_csv()) -- do not re-transform.
+  # Participant count isn't known until the file is found (it's embedded in
+  # the actual filename), so match by pattern rather than assuming a fixed N.
+  matches <- list.files(DATA_ROOT, pattern = glue("^{DATE_SOURCE}_active_[0-9]+p_flow_CastellarBand-{band}_statsnorm\\.csv$"))
+  if (length(matches) != 1) {
+    cat(glue("> Warning: expected exactly 1 file matching pattern for {band}, found {length(matches)}: {paste(matches, collapse=', ')}\n\n"))
+    next
+  }
+  data_full <- read.csv(file.path(DATA_ROOT, matches[1]), sep = ",")
+
+  for (method in METHODS) {
+    cat(glue("\n### Method: {method}\n\n"))
+
+    data <- data_full %>% filter(method == !!method)
+    if (nrow(data) == 0) {
+      cat(glue("> Warning: no rows for method='{method}' in {band}\n\n"))
+      next
+    }
+    df_band <- filter_data_band(data, ELECTRODES)
+
+    n_valid <- n_distinct(df_band$participant)
+    cat(glue("N = {n_valid} participants\n\n"))
+
+    label_tag <- glue("{band}_{method}")
+
+    # ── Boxplot ────────────────────────────────────────────────────────────
+    p <- create_band_boxplot(df_band, band) +
+      labs(subtitle = glue("Method: {method}"))
+    print(p)
+        cat("\n")
+
+    # ── Residual diagnostics ─────────────────────────────────────────────────
+    fit     <- fit_residuals(df_band)
+    resids  <- extract_within_residuals(fit)
+    shapiro <- shapiro.test(resids)
+    cat(glue("**Shapiro-Wilk** (within-stratum residuals): W = {round(as.numeric(shapiro$statistic), 3)}, p = {round(as.numeric(shapiro$p.value), 3)}\n\n"))
+
+    # ── Frequentist ANOVA ────────────────────────────────────────────────────
+    res <- run_band_anova(df_band)
+    tbl <- get_anova_table(res)
+    cat("**Repeated-measures ANOVA:**\n\n")
+    print(knitr::kable(tbl, digits = 3))
+    cat("\n")
+
+    # ── Sphericity: Mauchly's test + Greenhouse-Geisser correction ──────────
+    # electrode has 3 levels (Fz, FCz, Cz) -- sphericity is a real assumption
+    # to check there and for electrode:cond. cond alone (2 levels) has no
+    # Mauchly entry -- trivially satisfies sphericity, nothing to correct.
+    if (!is.null(res$`Mauchly's Test for Sphericity`)) {
+      cat("**Mauchly's Test for Sphericity:**\n\n")
+      print(knitr::kable(res$`Mauchly's Test for Sphericity`, digits = 3))
+      cat("\n")
+      cat("**Sphericity Corrections:**\n\n")
+      print(knitr::kable(res$`Sphericity Corrections`, digits = 3))
+      cat("\n")
+    }
+
+    # ── Bayesian ANOVA ───────────────────────────────────────────────────────
+    bf_anova <- run_band_anova_bayesian(df_band)
+
+    cat("**Bayesian repeated-measures ANOVA** (model comparison table):\n\n")
+    print(knitr::kable(bf_anova$bf_df, digits = 3))
+    cat("\n")
+
+    for (i in seq_len(nrow(tbl))) {
+      row  <- tbl[i, ]
+      term <- row$Effect
+      p_val <- as.numeric(row$p)
+      p_str <- format_p(p_val)
+      bf_str <- if (term %in% names(bf_anova$lookup)) format_bf(bf_anova$lookup[[term]]) else "NA"
+      sphericity_note <- format_sphericity_note(res, term)
+      apa <- glue("[{method}] {term}: F({row$DFn}, {row$DFd}) = {round(row$F, 2)}, {p_str}, ",
+                 "pes = {round(as.numeric(row$pes), 3)}, ges = {round(as.numeric(row$ges), 3)}, ",
+                 "BF10 = {bf_str} {sphericity_note}")
+      cat(glue("- {apa}\n"))
+      apa_texts_anova[[glue("{label_tag}_{term}")]] <- apa
+    }
+    cat("\n")
+
+    # ── Posthoc: frequentist ─────────────────────────────────────────────────
+    cat("**Post-hoc** (paired t-tests, Bonferroni):\n\n")
+    posthoc <- df_band %>%
+      group_by(electrode) %>%
+      pairwise_t_test(power ~ cond, paired = TRUE, p.adjust.method = "bonferroni") %>%
+      add_significance("p.adj")
+
+    # ── Posthoc: Bayesian ────────────────────────────────────────────────────
+    bf_posthoc <- run_band_posthoc_bayesian(df_band, "UT_highflow", "UT_lowflow")
+    posthoc <- posthoc %>% left_join(bf_posthoc, by = "electrode")
+
+    print(knitr::kable(posthoc, digits = 3))
+    cat("\n")
+
+    for (i in seq_len(nrow(posthoc))) {
+      row  <- posthoc[i, ]
+      elec <- as.character(row$electrode)
+
+      stats <- df_band %>%
+        filter(electrode == elec) %>%
+        group_by(cond) %>%
+        summarise(M = round(mean(power, na.rm = TRUE), 2), SD = round(sd(power, na.rm = TRUE), 2), .groups = "drop")
+
+      m1  <- stats$M[stats$cond  == "UT_highflow"]; sd1 <- stats$SD[stats$cond == "UT_highflow"]
+      m2  <- stats$M[stats$cond  == "UT_lowflow"];  sd2 <- stats$SD[stats$cond == "UT_lowflow"]
+      dval <- round(calc_cohens_d_posthoc(df_band, "UT_highflow", "UT_lowflow", elec, "power"), 2)
+      p_str <- format_p(as.numeric(row$p.adj))
+
+      apa <- glue(
+        "[{method}] {elec}: High Flow (M={m1}, SD={sd1}) vs Low Flow (M={m2}, SD={sd2}), ",
+        "t({row$df}) = {round(row$statistic, 2)}, {p_str}, d = {dval}, BF10 = {format_bf(row$BF10)}"
+      )
+      cat(glue("- {apa}\n"))
+      apa_texts_posthoc[[glue("{label_tag}_{elec}")]] <- apa
+
+      summary_rows[[glue("{label_tag}_{elec}")]] <- tibble(
+        Band = band, Method = method, Electrode = elec,
+        Mean_High = m1, SD_High = sd1, Mean_Low = m2, SD_Low = sd2,
+        t = round(row$statistic, 3), df = row$df, p = round(as.numeric(row$p.adj), 4),
+        d = dval, BF10 = round(row$BF10, 3), BF01 = round(row$BF01, 3)
+      )
+    }
+    cat("\n")
+  }
+}
+```
+
+## Summary Table
+
+```{r summary-table}
+summary_df <- bind_rows(summary_rows)
+knitr::kable(summary_df, digits = 3, caption = "FLOW | ACTIVE | Frequency Power (à la Castellar) | Both methods (exact vs trial)")
+```
+
+```{r save-summary}
+out_fname <- file.path(OUTPUT_RESULTS, glue("active_flow_freq_castellar_summary_{DATE_STR}.csv"))
+write.csv(summary_df, out_fname, row.names = FALSE)
+cat("Saved summary ->", out_fname, "\n")
+```
+
+## APA Text Block
+
+*Ready to copy-paste into manuscript.*
+
+```{r apa-block, results='asis'}
+cat("### Omnibus ANOVA\n\n")
+for (label in names(apa_texts_anova)) cat(apa_texts_anova[[label]], "\n\n")
+
+cat("### Post-hoc\n\n")
+for (label in names(apa_texts_posthoc)) cat(apa_texts_posthoc[[label]], "\n\n")
+```

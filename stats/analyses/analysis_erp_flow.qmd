@@ -1,0 +1,189 @@
+---
+title: "ERP Statistical Analysis — Flow Paper"
+subtitle: "Paired t-tests: High Flow vs Low Flow"
+date: today
+params:
+  paradigm: "passive"
+  measure: "raw"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    page-layout: full
+    theme: flatly
+  pdf:
+    toc: true
+    toc-depth: 3
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+source("utils.R")
+source("config_flow.R")
+
+# ==============================================================================
+# CONFIGURATION
+# Edited directly for interactive use, or set via render_all.R params
+# ==============================================================================
+
+PARADIGM    <- params$paradigm   # "active" | "passive"
+MEASURE     <- params$measure    # "raw" | "diff"
+DATE_SOURCE <- "20261015"
+
+# ==============================================================================
+# Auto-derived (do not edit)
+# ==============================================================================
+
+STUDY     <- if (PARADIGM == "active") "Active" else "Passive"
+DATA_ROOT <- glue("L:/EEG_Flow_data/Study_EEG_Flow_{STUDY}/derivatives_v2/outputs/measures/flow/")
+OUTPUT_RESULTS <- glue("L:/EEG_Flow_data/Study_EEG_Flow_{STUDY}/derivatives_v2/outputs/stats/flow/")
+
+included_participants <- if (PARADIGM == "active") INCLUDED_ACTIVE else INCLUDED_PASSIVE
+
+conditions_list <- switch(
+  paste(PARADIGM, MEASURE, sep = "_"),
+  active_raw   = CONDITIONS_ACTIVE_RAW,
+  active_diff  = CONDITIONS_ACTIVE_DIFF,
+  passive_raw  = CONDITIONS_PASSIVE_RAW,
+  passive_diff = CONDITIONS_PASSIVE_DIFF
+)
+
+n        <- length(included_participants)
+stim_col <- if (MEASURE == "diff") "contrast" else "stim"
+DATE_STR <- format(Sys.Date(), "%Y%m%d")
+
+csv_fname <- glue("{DATE_SOURCE}_{PARADIGM}_{n}p_flow_stim_{MEASURE}_allch_allwin_meanamp.csv")
+csv_path  <- file.path(DATA_ROOT, csv_fname)
+
+df_all <- load_cluster_data(csv_path, CONDITION_MAP, included_participants)
+
+dir.create(OUTPUT_RESULTS, showWarnings = FALSE, recursive = TRUE)
+```
+
+## Overview
+
+```{r overview}
+cat(glue(
+"**Paper**: FLOW  
+**Paradigm**: {toupper(PARADIGM)}  
+**Measure**: {toupper(MEASURE)}  
+**Rendered**: {DATE_STR}  
+**N participants**: {n}  
+**N tests**: {length(conditions_list)}  
+**CSV**: {csv_fname}  
+"))
+```
+
+## Results
+
+```{r analysis, results='asis'}
+summary_rows <- list()
+apa_texts    <- list()
+
+for (cond in conditions_list) {
+  component  <- cond$component
+  stim       <- cond$stim
+  window     <- cond$window
+  cluster    <- cond$cluster
+  electrodes <- CLUSTERS[[cluster]]
+  label      <- glue("{component}_{stim}_{cluster}_{window}")
+
+  df_cond <- filter_condition(df_all, stim_val = stim, window_val = window,
+                              electrodes = electrodes)
+
+  if (nrow(df_cond) == 0) {
+    cat(glue("\n> Warning: No data for: {label}\n\n"))
+    next
+  }
+
+  col_a <- paste0("mean_amp_uv.", CONDITION_LEVELS[1])
+  col_b <- paste0("mean_amp_uv.", CONDITION_LEVELS[2])
+
+  df_wide <- df_cond %>%
+    pivot_wider(
+      id_cols      = participant,
+      names_from   = condition,
+      values_from  = mean_amp_uv,
+      names_prefix = "mean_amp_uv.",
+      values_fn    = mean
+    ) %>%
+    mutate(across(starts_with("mean_amp_uv."), as.numeric))
+
+  missing_cols <- setdiff(c(col_a, col_b), names(df_wide))
+  if (length(missing_cols) > 0) {
+    cat(glue("\n> Warning: Missing condition(s) for {label}: {paste(missing_cols, collapse=', ')}\n\n"))
+    next
+  }
+
+  df_wide <- df_wide %>% drop_na(all_of(c(col_a, col_b)))
+  n_valid  <- nrow(df_wide)
+
+  cat(glue("\n### {component} — {stim} | {window} | {cluster} cluster\n\n"))
+  cat(glue("N = {n_valid} participants\n\n"))
+
+  # Assumption check
+  diffs   <- df_wide[[col_a]] - df_wide[[col_b]]
+  shapiro <- shapiro.test(diffs)
+  cat(glue("**Shapiro-Wilk** (differences): W = {round(as.numeric(shapiro$statistic), 3)}, p = {round(as.numeric(shapiro$p.value), 3)}\n\n"))
+
+  results <- run_paired_ttest(df_wide, CONDITION_LEVELS)
+  t_res   <- results$t
+  d_res   <- results$d
+  bf10    <- results$bf10
+  bf01    <- results$bf01
+  df_long <- results$df_long
+
+  cat(glue("**Bayesian paired t-test**: BF10 = {format_bf(bf10)}, BF01 = {format_bf(bf01)}\n\n"))
+
+  means <- c(mean(df_wide[[col_a]], na.rm = TRUE),
+             mean(df_wide[[col_b]], na.rm = TRUE))
+  sds   <- c(sd(df_wide[[col_a]], na.rm = TRUE),
+             sd(df_wide[[col_b]], na.rm = TRUE))
+
+  p <- plot_boxplot(df_long, CONDITION_LEVELS, CONDITION_COLORS,
+                    component, stim, window, cluster)
+  print(p)
+  cat("\n")
+
+  apa <- apa_ttest(t_res, d_res, bf10, component, stim, window, cluster,
+                   CONDITION_LEVELS, means, sds)
+  cat(glue("**APA:** {apa}\n\n"))
+  apa_texts[[label]] <- apa
+
+  summary_rows[[label]] <- build_summary_row(
+    component, stim, window, cluster,
+    CONDITION_LEVELS, means, sds, t_res, d_res, bf10, bf01
+  )
+}
+```
+
+## Summary Table
+
+```{r summary-table}
+summary_df <- bind_rows(summary_rows)
+knitr::kable(
+  summary_df,
+  digits  = 3,
+  caption = glue("FLOW | {toupper(PARADIGM)} | {toupper(MEASURE)}")
+)
+```
+
+```{r save-summary}
+out_fname <- glue("{OUTPUT_RESULTS}{PARADIGM}_flow_{MEASURE}_summary_{DATE_STR}.csv")
+write.csv(summary_df, out_fname, row.names = FALSE)
+cat("Saved summary ->", out_fname, "\n")
+```
+
+## APA Text Block
+
+*Ready to copy-paste into manuscript.*
+
+```{r apa-block, results='asis'}
+for (label in names(apa_texts)) {
+  cat(apa_texts[[label]], "\n\n")
+}
+```

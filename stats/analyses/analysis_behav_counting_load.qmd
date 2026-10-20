@@ -1,0 +1,256 @@
+---
+title: "Counting Accuracy — Passive Fixation Task — Load Paper"
+subtitle: "Block comparison (Oddball 1 vs 2) and correlation with action experience"
+date: today
+format:
+  html:
+    toc: true
+    code-fold: true
+    self-contained: true
+    theme: flatly
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+source("utils.R")
+source("config_load.R")
+
+DATE_ACTION <- "20261016"
+DATE_STR    <- format(Sys.Date(), "%Y%m%d")
+
+# Local git repo root — demographics/counting data is version-controlled here
+# rather than living in L:/derivatives, since it's a frozen snapshot of raw
+# questionnaire data (cleaned of unnecessary columns) rather than a
+# regenerated pipeline output.
+LOCAL_ROOT <- "L:/EEG_Flow_data/Study_EEG_Flow_Passive/raw/participant_records/experiment_log"
+DEMO_ROOT  <- LOCAL_ROOT
+
+# L: drive — action score CSV + output derivatives, matching rest of pipeline
+BEHAV_ROOT     <- "L:/EEG_Flow_data/Study_EEG_Flow_Passive/derivatives_v2/outputs/measures/behavior/"
+OUTPUT_RESULTS <- "L:/EEG_Flow_data/Study_EEG_Flow_Passive/derivatives_v2/outputs/stats/load/behavior/"
+
+
+
+dir.create(OUTPUT_RESULTS, showWarnings = FALSE, recursive = TRUE)
+
+included_participants <- INCLUDED_PASSIVE
+n <- length(included_participants)
+
+cat(glue("Included passive participants: {n}\n"))
+```
+
+## Overview
+
+```{r overview}
+cat(glue(
+"**Paper**: LOAD — Counting Accuracy (Passive Fixation Task)
+**Paradigm**: PASSIVE only
+**Task**: Participants counted flickers of the fixation cross during two oddball blocks
+**Analysis**: (1) block difference, (2) accuracy plot, (3) correlation with action score
+**N participants**: {n}
+**Rendered**: {DATE_STR}
+"))
+```
+
+```{r load-data}
+library(readxl)
+
+# Demographics / raw counts — from local git repo
+df_summary <- read_excel(
+  file.path(DEMO_ROOT, "3_data_summary_passive.xlsx"),
+  skip = 1
+)
+
+df_filtered <- df_summary %>%
+  filter(`Participant ID` %in% included_participants) %>%
+  mutate(
+    count2_clean = as.numeric(count2),
+    count3_clean = as.numeric(count3)
+  )
+
+# Action score — from L: drive
+df_action <- read.csv(
+  file.path(BEHAV_ROOT, glue("{DATE_ACTION}_passive_action_score.csv"))
+) %>%
+  filter(participant %in% included_participants) %>%
+  select(participant, action_past_hours)
+
+cat(glue("N with demographics: {n_distinct(df_filtered[['Participant ID']])}\n"))
+cat(glue("N with action score: {n_distinct(df_action$participant)}\n"))
+```
+
+## Data Preparation
+
+```{r prepare-long}
+CONDITIONS <- c("Oddball 1", "Oddball 2")
+CORRECT    <- c("Oddball 1" = 15, "Oddball 2" = 19)
+
+df_plot <- df_filtered %>%
+  select(`Participant ID`, count2_clean, count3_clean) %>%
+  pivot_longer(
+    cols      = c(count2_clean, count3_clean),
+    names_to  = "block",
+    values_to = "count"
+  ) %>%
+  filter(!is.na(count)) %>%
+  mutate(
+    block     = recode(block, count2_clean = "Oddball 1", count3_clean = "Oddball 2"),
+    block     = factor(block, levels = CONDITIONS),
+    correct   = CORRECT[block],
+    pct_error = (count - correct) / correct * 100
+  )
+
+n_valid <- n_distinct(df_plot$`Participant ID`)
+cat(glue("N with at least one valid block: {n_valid}\n"))
+```
+
+## Block Difference (Oddball 1 vs Oddball 2)
+
+```{r block-difference}
+paired_wide <- df_plot %>%
+  select(`Participant ID`, block, pct_error) %>%
+  pivot_wider(names_from = block, values_from = pct_error) %>%
+  drop_na()
+
+n_paired <- nrow(paired_wide)
+
+block_ttest <- paired_wide %>%
+  pivot_longer(cols = all_of(CONDITIONS), names_to = "block", values_to = "pct_error") %>%
+  t_test(pct_error ~ block, paired = TRUE) %>%
+  add_significance()
+
+knitr::kable(block_ttest, digits = 4,
+             caption = glue("Paired t-test, Oddball 1 vs Oddball 2 (N = {n_paired})"))
+```
+
+## Figure: Counting Accuracy Across Blocks
+
+```{r fig-counting-blocks}
+#| fig-cap: "Counting accuracy (signed % error) across Oddball 1 and Oddball 2 blocks."
+
+p_blocks <- ggplot(df_plot, aes(x = block, y = pct_error)) +
+  geom_violin(fill = "#3498DB", trim = TRUE, cut = 0) +
+  geom_line(aes(group = `Participant ID`),
+            color = "#2C3E50", alpha = 0.3, linewidth = 0.4) +
+  geom_point(color = "#2C3E50", alpha = 0.3, size = 1.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.8) +
+  annotate("text", x = 2.35, y = 0, label = "perfect count", size = 3.2, hjust = 0) +
+  labs(
+    x = NULL,
+    y = "Signed % error ((reported \u2212 actual) / actual \u00d7 100)",
+    title = glue("Oddball counting accuracy \u2014 Passive | N={n_valid}")
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title      = element_text(face = "bold"),
+    axis.text.x     = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    plot.margin      = margin(5.5, 40, 5.5, 5.5)
+  )
+
+print(p_blocks)
+
+```
+
+## Correlation with Action Score
+
+```{r correlation-action}
+df_pooled <- df_plot %>%
+  group_by(`Participant ID`) %>%
+  summarise(pct_error = mean(pct_error, na.rm = TRUE), .groups = "drop") %>%
+  left_join(
+    df_action %>% rename(`Participant ID` = participant, action_score = action_past_hours),
+    by = "Participant ID"
+  ) %>%
+  drop_na(action_score)
+
+n_pooled <- nrow(df_pooled)
+
+# Full sample
+corr_full <- df_pooled %>% cor_test(action_score, pct_error, method = "spearman")
+
+# Excluding S45 — highest action score (45.5h), exactly 0% error; single
+# high-leverage point that changes significance (see manuscript note)
+df_pooled_excl <- df_pooled %>% filter(`Participant ID` != "S45")
+corr_excl <- df_pooled_excl %>% cor_test(action_score, pct_error, method = "spearman")
+
+knitr::kable(bind_rows(
+  corr_full %>% mutate(sample = glue("Full (N={n_pooled})")),
+  corr_excl %>% mutate(sample = glue("Excl. S45 (N={nrow(df_pooled_excl)})"))
+) %>% select(sample, everything()), digits = 4,
+  caption = "Spearman correlation: action score vs. pooled signed % error")
+```
+
+## Figure: Correlation with Action Score
+
+```{r fig-correlation-action}
+#| fig-cap: "Counting accuracy vs. action-game experience score, full sample and with the single high-leverage participant (S45) excluded."
+
+p_corr <- ggplot(df_pooled, aes(x = action_score, y = pct_error)) +
+  geom_point(alpha = 0.6, size = 2, color = "#2C3E50") +
+  geom_point(data = filter(df_pooled, `Participant ID` == "S45"),
+             color = "#E74C3C", size = 3) +
+  geom_smooth(method = "lm", se = TRUE, color = "#3498DB", fill = "#AED6F1") +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.6) +
+  labs(
+    x = "Action score (est. weekly hours)",
+    y = "Signed % error (pooled across blocks)",
+    title = "Counting accuracy vs. action-game experience",
+    subtitle = glue(
+      "Full: rho={round(corr_full$cor, 3)}, p={round(corr_full$p, 4)} | ",
+      "Excl. S45: rho={round(corr_excl$cor, 3)}, p={round(corr_excl$p, 4)}"
+    )
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+
+print(p_corr)
+
+```
+
+## Manuscript Text Block
+
+```{r apa-block, results='asis'}
+block_p       <- format_p(block_ttest$p)
+corr_full_p   <- format_p(corr_full$p)
+corr_excl_p   <- format_p(corr_excl$p)
+
+apa_text <- glue(
+"**Counting accuracy (passive fixation task)**
+
+Counting accuracy did not differ between the two oddball blocks ",
+"(paired t-test, t = {round(block_ttest$statistic, 2)}, {block_p}, N = {n_paired}), ",
+"justifying pooling of the two blocks for subsequent analysis.
+
+Counting accuracy (expressed as signed percent error relative to the correct count) ",
+"was not related to action-game experience score after removing a single high-leverage ",
+"participant (Spearman correlation, excluding S45: rho = {round(corr_excl$cor, 3)}, {corr_excl_p}, N = {nrow(df_pooled_excl)}). ",
+"The full-sample correlation (rho = {round(corr_full$cor, 3)}, {corr_full_p}, N = {n_pooled}) ",
+"was not robust to this single exclusion."
+)
+
+cat(apa_text)
+```
+
+## Save Summary
+
+```{r save-summary}
+summary_df <- tibble(
+  analysis = c("Block difference (Oddball 1 vs 2)",
+               "Correlation, full sample",
+               "Correlation, excl. S45"),
+  statistic = c(block_ttest$statistic, corr_full$statistic, corr_excl$statistic),
+  p_value   = c(block_ttest$p, corr_full$p, corr_excl$p),
+  n         = c(n_paired, n_pooled, nrow(df_pooled_excl))
+)
+
+write.csv(summary_df,
+          file.path(OUTPUT_RESULTS,
+                    glue("passive_load_counting_summary_{DATE_STR}.csv")),
+          row.names = FALSE)
+
+knitr::kable(summary_df, digits = 4, caption = "Summary of counting accuracy analyses")
+```

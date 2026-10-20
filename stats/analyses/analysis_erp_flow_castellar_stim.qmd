@@ -1,0 +1,288 @@
+---
+title: "ERP Analysis — Flow Paper (à la Castellar)"
+subtitle: "Repeated-measures ANOVA: Electrode (Fz × Pz) × Condition (High vs Low Flow)"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    page-layout: full
+    theme: flatly
+  pdf:
+    toc: true
+    toc-depth: 3
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+source("utils.R")
+source("config_flow.R")
+
+PARADIGM    <- "active"
+MEASURE     <- "raw"
+LOCK        <- "stim"
+DATE_SOURCE <- "20261015"
+WINDOW      <- "350-750ms"
+CHANNELS    <- c("Fz", "Pz")
+
+OUTPUT_RESULTS <- "L:/EEG_Flow_data/Study_EEG_Flow_Active/derivatives_v2/outputs/stats/flow/castellar/"
+DATA_ROOT      <- "L:/EEG_Flow_data/Study_EEG_Flow_Active/derivatives_v2/outputs/measures/flow/"
+DATE_STR       <- format(Sys.Date(), "%Y%m%d")
+
+dir.create(OUTPUT_RESULTS, showWarnings = FALSE, recursive = TRUE)
+
+n         <- length(INCLUDED_ACTIVE)
+csv_fname <- glue("{DATE_SOURCE}_{PARADIGM}_{n}p_flow_stim_{MEASURE}_allch_allwin_meanamp.csv")
+csv_path  <- file.path(DATA_ROOT, csv_fname)
+
+df_all <- load_cluster_data(csv_path, CONDITION_MAP, INCLUDED_ACTIVE)
+cat("Loaded:", nrow(df_all), "rows |", n_distinct(df_all$participant), "participants\n")
+cat("Windows available:", paste(sort(unique(df_all$window)), collapse=", "), "\n")
+
+summary_rows <- list()
+apa_texts    <- list()
+```
+
+## Overview
+
+```{r overview}
+cat(glue(
+"**Paper**: FLOW — à la Castellar  
+**Paradigm**: ACTIVE  
+**Window**: {WINDOW}  
+**Electrodes**: {paste(CHANNELS, collapse=' × ')}  
+**Conditions**: {paste(CONDITION_LEVELS, collapse=' vs ')}  
+**N participants**: {n}  
+**Rendered**: {DATE_STR}  
+"))
+```
+
+```{r analysis-functions}
+run_stim_analysis <- function(df_all, stim) {
+  df_cond <- df_all %>%
+    filter(
+      stim    == !!stim,
+      window  == WINDOW,
+      ch_name %in% CHANNELS
+    ) %>%
+    mutate(
+      ch_name   = factor(ch_name,   levels = CHANNELS),
+      condition = factor(condition, levels = CONDITION_LEVELS)
+    )
+
+  if (nrow(df_cond) == 0) {
+    cat(glue("> Warning: No data for stim='{stim}', window='{WINDOW}'\n\n"))
+    return(invisible(NULL))
+  }
+
+  n_valid <- n_distinct(df_cond$participant)
+  cat(glue("N = {n_valid} participants\n\n"))
+
+  # Boxplot
+  p <- df_cond %>%
+    ggplot(aes(x = ch_name, y = mean_amp_uv, fill = condition)) +
+    geom_boxplot(color = "black", outlier.shape = 21) +
+    scale_fill_manual(values = CONDITION_COLORS, name = "Condition") +
+    scale_y_reverse() +
+    labs(
+      title    = glue("{str_to_title(stim)} — {WINDOW} | Fz × Pz"),
+      subtitle = glue("N = {n_valid}"),
+      x        = "Electrode",
+      y        = "Mean amplitude (µV)"
+    ) +
+    theme_classic(base_size = 13) +
+    theme(legend.position = "top")
+  print(p)
+  cat("\n")
+
+  # Assumption check
+  res_aov <- aov(mean_amp_uv ~ ch_name * condition, data = df_cond)
+  resids  <- residuals(res_aov)
+  shapiro <- shapiro.test(resids)
+  cat(glue("**Shapiro-Wilk** (residuals): W = {round(as.numeric(shapiro$statistic), 3)}, p = {round(as.numeric(shapiro$p.value), 3)}\n\n"))
+
+  # Repeated-measures ANOVA
+  res_ges <- anova_test(
+    data = df_cond, dv = mean_amp_uv, wid = participant,
+    within = c(ch_name, condition), type = 2, effect.size = "ges"
+  )
+  res_pes <- anova_test(
+    data = df_cond, dv = mean_amp_uv, wid = participant,
+    within = c(ch_name, condition), type = 2, effect.size = "pes"
+  )
+  tbl     <- get_anova_table(res_ges)
+  tbl$pes <- get_anova_table(res_pes)$pes
+
+  cat("**Repeated-measures ANOVA:**\n\n")
+  print(knitr::kable(tbl, digits = 3))
+  cat("\n")
+
+  # Bayesian RM ANOVA
+  df_cond_bf <- df_cond %>%
+    mutate(participant = factor(participant),
+           ch_name     = factor(ch_name),
+           condition   = factor(condition))
+
+  bf_models <- anovaBF(
+    mean_amp_uv ~ ch_name * condition + participant,
+    data        = df_cond_bf,
+    whichRandom = "participant",
+    whichModels = "withmain",
+    progress    = FALSE
+  )
+
+  bf_df       <- as.data.frame(bf_models)
+  bf_df$model <- rownames(bf_df)
+
+  normalize_term <- function(term) {
+    if (grepl(":", term)) {
+      parts <- sort(trimws(strsplit(term, ":")[[1]]))
+      paste(parts, collapse = ":")
+    } else {
+      trimws(term)
+    }
+  }
+
+  get_bf_for_model <- function(target_terms) {
+    target_norm <- sort(sapply(target_terms, normalize_term))
+    terms_list  <- strsplit(bf_df$model, "\\s*\\+\\s*")
+    matches     <- sapply(terms_list, function(terms) {
+      setequal(sort(sapply(terms, normalize_term)), target_norm)
+    })
+    if (sum(matches) != 1) {
+      warning(glue("Expected exactly 1 match for {paste(target_terms, collapse=', ')}, found {sum(matches)}"))
+      return(NA)
+    }
+    bf_df$bf[matches]
+  }
+
+  bf_chname      <- get_bf_for_model(c("ch_name", "participant"))
+  bf_condition   <- get_bf_for_model(c("condition", "participant"))
+  bf_maineffects <- get_bf_for_model(c("ch_name", "condition", "participant"))
+  bf_full        <- get_bf_for_model(c("ch_name", "condition", "ch_name:condition", "participant"))
+  bf_interaction <- bf_full / bf_maineffects
+  bf_lookup      <- c("ch_name" = bf_chname, "condition" = bf_condition, "ch_name:condition" = bf_interaction)
+
+  # APA text — ANOVA
+  for (i in seq_len(nrow(tbl))) {
+    row    <- tbl[i, ]
+    term   <- row$Effect
+    f_val  <- round(row$F, 2)
+    df1    <- row$DFn
+    df2    <- row$DFd
+    p_val  <- as.numeric(row$p)
+    eta    <- round(as.numeric(row$pes), 3)
+    p_str  <- format_p(p_val)
+    bf_str <- if (term %in% names(bf_lookup)) format_bf(bf_lookup[[term]]) else "NA"
+    apa    <- glue("{term}: F({df1}, {df2}) = {f_val}, {p_str}, pes = {eta}, BF10 = {bf_str}")
+    cat(glue("- {apa}\n\n"))
+    apa_texts[[glue("{stim}_{term}")]] <<- apa
+  }
+  cat("\n")
+
+  # Post-hoc paired t-tests
+  cat("**Post-hoc** (paired t-tests, Bonferroni):\n\n")
+  posthoc <- df_cond %>%
+    group_by(ch_name) %>%
+    pairwise_t_test(
+      mean_amp_uv ~ condition,
+      paired          = TRUE,
+      p.adjust.method = "bonferroni"
+    )
+  print(knitr::kable(posthoc, digits = 3))
+  cat("\n")
+
+  # Bayesian paired t-test per channel
+  bf_by_channel <- map_dfr(unique(df_cond$ch_name), function(ch) {
+    df_wide_ch <- df_cond %>%
+      filter(ch_name == ch) %>%
+      pivot_wider(id_cols = participant, names_from = condition, values_from = mean_amp_uv) %>%
+      drop_na(all_of(CONDITION_LEVELS))
+    bf_res <- ttestBF(x = df_wide_ch[[CONDITION_LEVELS[1]]], y = df_wide_ch[[CONDITION_LEVELS[2]]], paired = TRUE)
+    tibble(ch_name = ch, BF10 = as.numeric(extractBF(bf_res)$bf))
+  })
+  posthoc <- posthoc %>%
+    left_join(bf_by_channel, by = "ch_name") %>%
+    mutate(BF01 = 1 / BF10)
+
+  # Post-hoc APA
+  for (i in seq_len(nrow(posthoc))) {
+    row   <- posthoc[i, ]
+    ch    <- row$ch_name
+    p_str <- format_p(as.numeric(row$p.adj))
+
+    stats <- df_cond %>%
+      filter(ch_name == ch) %>%
+      group_by(condition) %>%
+      summarise(M = round(mean(mean_amp_uv, na.rm=TRUE), 2),
+                SD = round(sd(mean_amp_uv,  na.rm=TRUE), 2), .groups="drop")
+
+    m1  <- stats$M[stats$condition  == CONDITION_LEVELS[1]]
+    sd1 <- stats$SD[stats$condition == CONDITION_LEVELS[1]]
+    m2  <- stats$M[stats$condition  == CONDITION_LEVELS[2]]
+    sd2 <- stats$SD[stats$condition == CONDITION_LEVELS[2]]
+
+    apa_ph <- glue(
+      "{ch}: {CONDITION_LEVELS[1]} (M={m1}, SD={sd1}) vs ",
+      "{CONDITION_LEVELS[2]} (M={m2}, SD={sd2}), ",
+      "t({row$df}) = {round(row$statistic, 2)}, {p_str}, BF10 = {format_bf(row$BF10)}"
+    )
+    cat(glue("- {apa_ph}\n\n"))
+    apa_texts[[glue("{stim}_{ch}_posthoc")]] <<- apa_ph
+  }
+  cat("\n")
+}
+```
+
+## Standard stimuli
+
+```{r standard, results='asis'}
+run_stim_analysis(df_all, "standard")
+```
+
+## Target stimuli
+
+```{r target, results='asis'}
+run_stim_analysis(df_all, "target")
+```
+
+## Novel stimuli
+
+```{r novel, results='asis'}
+run_stim_analysis(df_all, "novel")
+```
+
+## Summary Table
+
+```{r summary-table}
+summary_df <- bind_rows(summary_rows)
+knitr::kable(summary_df, digits = 3,
+             caption = "FLOW | ACTIVE | Stim-Locked | Castellar")
+```
+
+```{r save-summary}
+write.csv(summary_df,
+          file.path(OUTPUT_RESULTS, glue("active_flow_castellar_stim_summary_{DATE_STR}.csv")),
+          row.names = FALSE)
+cat("Summary saved.\n")
+```
+
+## APA Text Block
+
+*Ready to copy-paste into manuscript.*
+
+```{r apa-block, results='asis'}
+current_stim <- ""
+for (label in names(apa_texts)) {
+  stim_part <- strsplit(label, "_")[[1]][1]
+  if (stim_part != current_stim) {
+    current_stim <- stim_part
+    cat(glue("\n**{str_to_title(stim_part)}**\n\n"))
+  }
+  cat(apa_texts[[label]], "\n\n")
+}
+```

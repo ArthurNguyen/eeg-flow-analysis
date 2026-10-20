@@ -1,0 +1,6 @@
+.Rhistory
+.RData
+
+# Jupyter
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/

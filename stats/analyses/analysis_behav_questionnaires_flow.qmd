@@ -1,0 +1,208 @@
+---
+title: "Questionnaires — Flow Paper"
+subtitle: "Paired t-tests: High Flow vs Low Flow"
+date: today
+params:
+  paradigm: "active"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    page-layout: full
+    theme: flatly
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+source("utils.R")
+source("config_flow.R")
+
+PARADIGM    <- params$paradigm
+DATE_SOURCE <- "20261016"
+DATE_STR    <- format(Sys.Date(), "%Y%m%d")
+
+STUDY          <- if (PARADIGM == "active") "Active" else "Passive"
+DATA_ROOT      <- glue("L:/EEG_Flow_data/Study_EEG_Flow_{STUDY}/derivatives_v2/outputs/measures/behavior/")
+OUTPUT_RESULTS <- glue("L:/EEG_Flow_data/Study_EEG_Flow_{STUDY}/derivatives_v2/outputs/stats/flow/behavior/")
+
+dir.create(OUTPUT_RESULTS, showWarnings = FALSE, recursive = TRUE)
+
+included_participants <- if (PARADIGM == "active") INCLUDED_ACTIVE else INCLUDED_PASSIVE
+n          <- length(included_participants)
+FSS_PREFIX <- if (PARADIGM == "active") "FSS2" else "FSS"
+CONDITIONS <- CONDITION_LEVELS
+
+fname  <- glue("{DATE_SOURCE}_{PARADIGM}_questionnaires.csv")
+df_raw <- read.csv(file.path(DATA_ROOT, fname))
+
+df_all <- df_raw %>%
+  filter(participant %in% included_participants,
+         task == "oddball_game",
+         condition %in% CONDITIONS) %>%
+  rename(Participant = participant,
+         Condition   = condition,
+         Measure     = measure,
+         Score       = score) %>%
+  mutate(Condition = factor(Condition, levels = CONDITIONS))
+
+df_avg <- df_all %>%
+  group_by(Participant, Condition, Measure) %>%
+  summarise(Score = mean(Score, na.rm = TRUE), .groups = "drop")
+
+cat("Loaded:", n_distinct(df_avg$Participant), "participants\n")
+cat("Measures:", paste(sort(unique(df_avg$Measure)), collapse=", "), "\n")
+```
+
+## Overview
+
+```{r overview}
+cat(glue(
+"**Paper**: FLOW — Questionnaires  
+**Paradigm**: {toupper(PARADIGM)}  
+**Conditions**: {paste(CONDITIONS, collapse = ' vs ')}  
+**FSS instrument**: {FSS_PREFIX}  
+**N participants**: {n}  
+**Rendered**: {DATE_STR}  
+"))
+```
+
+```{r helper}
+run_ttest_measure <- function(df_avg, measure_name, conditions) {
+  df_filtered <- df_avg %>% filter(Measure == measure_name)
+  if (nrow(df_filtered) == 0) {
+    cat(glue("> Warning: no data for {measure_name}\n\n"))
+    return(NULL)
+  }
+
+  df_wide <- df_filtered %>%
+    pivot_wider(id_cols = Participant, names_from = Condition, values_from = Score) %>%
+    drop_na(all_of(conditions))
+
+  if (nrow(df_wide) < 3) {
+    cat(glue("> Warning: not enough data for {measure_name}\n\n"))
+    return(NULL)
+  }
+
+  col_a <- conditions[1]; col_b <- conditions[2]
+  df_wide <- df_wide %>% mutate(dif = .data[[col_a]] - .data[[col_b]])
+
+  n_valid <- nrow(df_wide)
+  shapiro <- shapiro.test(df_wide$dif)
+  t_res   <- t.test(df_wide[[col_a]], df_wide[[col_b]], paired = TRUE)
+  d_res   <- df_filtered %>% cohens_d(Score ~ Condition, paired = TRUE)
+
+  bf_res <- ttestBF(x = df_wide[[col_a]], y = df_wide[[col_b]], paired = TRUE)
+  bf10   <- as.numeric(extractBF(bf_res)$bf)
+  bf01   <- 1 / bf10
+
+  summary_stats <- df_filtered %>%
+    group_by(Condition) %>%
+    summarise(M = round(mean(Score, na.rm=TRUE), 2),
+              SD = round(sd(Score, na.rm=TRUE), 2), .groups="drop")
+
+  t_val  <- round(t_res$statistic, 2)
+  df_val <- t_res$parameter
+  p_val  <- t_res$p.value
+  p_str  <- format_p(p_val)
+  d_val  <- round(d_res$effsize, 2)
+  d_mag  <- interpret_d(d_val)
+
+  means <- setNames(summary_stats$M,  summary_stats$Condition)
+  sds   <- setNames(summary_stats$SD, summary_stats$Condition)
+
+  apa <- glue(
+    "{measure_name}: {conditions[1]} (M = {means[conditions[1]]}, SD = {sds[conditions[1]]}) vs. ",
+    "{conditions[2]} (M = {means[conditions[2]]}, SD = {sds[conditions[2]]}); ",
+    "t({df_val}) = {t_val}, {p_str}, d = {d_val} ({d_mag}), BF10 = {format_bf(bf10)}."
+  )
+
+  cat(glue("N = {n_valid} | Shapiro-Wilk: W = {round(shapiro$statistic, 3)}, p = {round(shapiro$p.value, 3)}\n\n"))
+  cat(glue("**APA:** {apa}\n\n"))
+
+  list(
+    summary = tibble(
+      Measure   = measure_name,
+      !!glue("Mean_{conditions[1]}")  := means[conditions[1]],
+      !!glue("SD_{conditions[1]}")    := sds[conditions[1]],
+      !!glue("Mean_{conditions[2]}")  := means[conditions[2]],
+      !!glue("SD_{conditions[2]}")    := sds[conditions[2]],
+      t         = t_val, df = df_val,
+      p         = p_val, p_str = p_str,
+      d         = d_val, d_magnitude = d_mag,
+      BF10      = round(bf10, 2), BF01 = round(bf01, 2)
+    ),
+    apa = apa
+  )
+}
+```
+
+## Main — Global & Agg6
+
+```{r main, results='asis'}
+summary_rows <- list()
+apa_texts    <- list()
+
+main_measures <- c(glue("{FSS_PREFIX}_Global"), glue("{FSS_PREFIX}_Agg6"), glue("{FSS_PREFIX}_Agg3"))
+
+for (m in main_measures) {
+  cat(glue("\n### {m}\n\n"))
+  res <- run_ttest_measure(df_avg, m, CONDITIONS)
+  if (!is.null(res)) { summary_rows[[m]] <- res$summary; apa_texts[[m]] <- res$apa }
+}
+```
+
+## Individual dimensions
+
+```{r dimensions, results='asis'}
+dim_measures <- sort(grep(glue("^{FSS_PREFIX}_[0-9]"), unique(df_avg$Measure), value=TRUE))
+
+for (m in dim_measures) {
+  cat(glue("\n### {m}\n\n"))
+  res <- run_ttest_measure(df_avg, m, CONDITIONS)
+  if (!is.null(res)) { summary_rows[[m]] <- res$summary; apa_texts[[m]] <- res$apa }
+}
+```
+
+## Supplementary — IMI, RSME, Frustration
+
+```{r supplementary, results='asis'}
+for (m in c("IMI", "frust", "RSME")) {
+  cat(glue("\n### {m}\n\n"))
+  res <- run_ttest_measure(df_avg, m, CONDITIONS)
+  if (!is.null(res)) { summary_rows[[m]] <- res$summary; apa_texts[[m]] <- res$apa }
+}
+```
+
+## Summary Table
+
+```{r summary-table}
+summary_df <- bind_rows(summary_rows)
+knitr::kable(summary_df, digits=3,
+             caption = glue("FLOW | {toupper(PARADIGM)} | Questionnaires"))
+```
+
+```{r save-summary}
+write.csv(summary_df,
+          file.path(OUTPUT_RESULTS, glue("{PARADIGM}_flow_questionnaires_summary_{DATE_STR}.csv")),
+          row.names=FALSE)
+cat("Summary saved.\n")
+```
+
+## APA Text Block
+
+```{r apa-block, results='asis'}
+for (section in list(
+  list(name="Main (Global & Agg6)",   measures=main_measures),
+  list(name="Individual dimensions",  measures=dim_measures),
+  list(name="Supplementary",          measures=c("IMI","frust","RSME"))
+)) {
+  cat(glue("\n### {section$name}\n\n"))
+  for (m in section$measures) {
+    if (m %in% names(apa_texts)) cat(glue("**{m}**: {apa_texts[[m]]}"), "\n\n")
+  }
+}
+```
