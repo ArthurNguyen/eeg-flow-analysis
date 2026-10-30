@@ -43,6 +43,39 @@ load_cluster_data <- function(csv_path, condition_map, included_participants) {
   df
 }
 
+# -----------------------------------------------------------------------------
+# Stimulus-locked measure CSVs — two variants since 2026-10-30:
+#   trials = "correct"   -> correct trials only (primary analysis)
+#   trials = "alltrials" -> all trials (sensitivity analysis)
+# Matches the exact file-name pattern written by extract_measures.ipynb, so an
+# old CSV without the trials suffix, or the other variant, can never be picked.
+# date_source = NULL picks the latest date; a "YYYYMMDD" string pins one.
+# -----------------------------------------------------------------------------
+find_stim_measures <- function(data_root, paradigm, paper,
+                               measure = c("raw", "diff"),
+                               trials  = c("correct", "alltrials"),
+                               date_source = NULL) {
+  measure  <- match.arg(measure)
+  trials   <- match.arg(trials)
+  date_pat <- if (is.null(date_source)) "[0-9]{8}" else date_source
+  pat <- sprintf("^%s_%s_[0-9]+p_%s_stim_%s_%s_allch_allwin_meanamp\\.csv$",
+                 date_pat, paradigm, paper, measure, trials)
+  files <- sort(list.files(data_root, pattern = pat), decreasing = TRUE)
+  if (length(files) == 0) {
+    stop(sprintf("No %s %s stim %s CSV for trials='%s'%s in %s",
+                 paper, paradigm, measure, trials,
+                 if (is.null(date_source)) "" else paste0(" and date ", date_source),
+                 data_root))
+  }
+  same_date <- files[substr(files, 1, 8) == substr(files[1], 1, 8)]
+  if (length(same_date) > 1) {
+    stop("Several CSVs share the same date, pin one explicitly: ",
+         paste(same_date, collapse = ", "))
+  }
+  message("Using: ", files[1])
+  file.path(data_root, files[1])
+}
+
 filter_condition <- function(df, stim_val, window_val, electrodes) {
   # Handle both "stim" (raw) and "contrast" (diff) column names
   stim_col <- if ("stim" %in% names(df)) "stim" else "contrast"

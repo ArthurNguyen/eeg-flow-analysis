@@ -2,6 +2,8 @@
 title: "ERP Analysis — Flow Paper (à la Castellar)"
 subtitle: "Repeated-measures ANOVA: Electrode (Fz × Pz) × Condition (High vs Low Flow)"
 date: today
+params:
+  trials: "correct"     # "correct" (primary) | "alltrials" (sensitivity)
 format:
   html:
     toc: true
@@ -25,7 +27,8 @@ source("config_flow.R")
 PARADIGM    <- "active"
 MEASURE     <- "raw"
 LOCK        <- "stim"
-DATE_SOURCE <- "20261015"
+TRIALS      <- params$trials     # "correct" | "alltrials"
+DATE_SOURCE <- NULL      # NULL = latest CSV; or pin a date, e.g. "20261031"
 WINDOW      <- "350-750ms"
 CHANNELS    <- c("Fz", "Pz")
 
@@ -36,8 +39,8 @@ DATE_STR       <- format(Sys.Date(), "%Y%m%d")
 dir.create(OUTPUT_RESULTS, showWarnings = FALSE, recursive = TRUE)
 
 n         <- length(INCLUDED_ACTIVE)
-csv_fname <- glue("{DATE_SOURCE}_{PARADIGM}_{n}p_flow_stim_{MEASURE}_allch_allwin_meanamp.csv")
-csv_path  <- file.path(DATA_ROOT, csv_fname)
+csv_path  <- find_stim_measures(DATA_ROOT, PARADIGM, "flow", MEASURE, TRIALS, DATE_SOURCE)
+csv_fname <- basename(csv_path)
 
 df_all <- load_cluster_data(csv_path, CONDITION_MAP, INCLUDED_ACTIVE)
 cat("Loaded:", nrow(df_all), "rows |", n_distinct(df_all$participant), "participants\n")
@@ -54,6 +57,8 @@ cat(glue(
 "**Paper**: FLOW — à la Castellar  
 **Paradigm**: ACTIVE  
 **Window**: {WINDOW}  
+**Trials**: {TRIALS}  
+**CSV**: {csv_fname}  
 **Electrodes**: {paste(CHANNELS, collapse=' × ')}  
 **Conditions**: {paste(CONDITION_LEVELS, collapse=' vs ')}  
 **N participants**: {n}  
@@ -266,7 +271,7 @@ knitr::kable(summary_df, digits = 3,
 
 ```{r save-summary}
 write.csv(summary_df,
-          file.path(OUTPUT_RESULTS, glue("active_flow_castellar_stim_summary_{DATE_STR}.csv")),
+          file.path(OUTPUT_RESULTS, glue("active_flow_castellar_stim_{TRIALS}_summary_{DATE_STR}.csv")),
           row.names = FALSE)
 cat("Summary saved.\n")
 ```

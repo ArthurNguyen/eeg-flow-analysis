@@ -5,6 +5,7 @@ date: today
 params:
   paradigm: "active"
   measure: "raw"
+  trials: "correct"     # "correct" (primary) | "alltrials" (sensitivity)
 format:
   html:
     toc: true
@@ -36,7 +37,8 @@ COMPONENTS_WITH_ELECTRODE_BF <- c("N2")
 
 PARADIGM    <- params$paradigm
 MEASURE     <- params$measure
-DATE_SOURCE <- "20261015"
+TRIALS      <- params$trials     # "correct" | "alltrials"
+DATE_SOURCE <- NULL      # NULL = latest CSV; or pin a date, e.g. "20261031"
 
 PARADIGM_REAL <- strsplit(PARADIGM, "-")[[1]][1]
 STUDY         <- if (PARADIGM_REAL == "active") "Active" else "Passive"
@@ -69,8 +71,8 @@ stim_col <- if (MEASURE == "diff") "contrast" else "stim"
 DATE_STR <- format(Sys.Date(), "%Y%m%d")
 
 n_source  <- length(if (PARADIGM_REAL == "active") INCLUDED_ACTIVE else INCLUDED_PASSIVE)
-csv_fname <- glue("{DATE_SOURCE}_{PARADIGM_REAL}_{n_source}p_load_stim_{MEASURE}_allch_allwin_meanamp.csv")
-csv_path  <- file.path(DATA_ROOT, csv_fname)
+csv_path  <- find_stim_measures(DATA_ROOT, PARADIGM_REAL, "load", MEASURE, TRIALS, DATE_SOURCE)
+csv_fname <- basename(csv_path)
 
 df_all <- load_cluster_data(csv_path, CONDITION_MAP, included_participants)
 
@@ -84,6 +86,7 @@ cat(glue(
 "**Paper**: LOAD  
 **Paradigm**: {toupper(PARADIGM)}  
 **Measure**: {toupper(MEASURE)}  
+**Trials**: {TRIALS}  
 **Analysis**: {if (USE_ANOVA) '2-way RM ANOVA (condition x electrode)' else 'Paired t-test'}  
 **Rendered**: {DATE_STR}  
 **N participants**: {n}  
@@ -381,7 +384,7 @@ knitr::kable(summary_df, digits = 3,
 
 ```{r save-summary}
 out_fname <- file.path(OUTPUT_RESULTS,
-                       glue("{PARADIGM}_load_{MEASURE}_summary_{DATE_STR}.csv"))
+                       glue("{PARADIGM}_load_{MEASURE}_{TRIALS}_summary_{DATE_STR}.csv"))
 write.csv(summary_df, out_fname, row.names = FALSE)
 cat("Saved summary ->", out_fname, "\n")
 ```

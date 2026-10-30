@@ -5,6 +5,7 @@ date: today
 params:
   paradigm: "passive"
   measure: "raw"
+  trials: "correct"     # "correct" (primary) | "alltrials" (sensitivity)
 format:
   html:
     toc: true
@@ -32,7 +33,8 @@ source("config_flow.R")
 
 PARADIGM    <- params$paradigm   # "active" | "passive"
 MEASURE     <- params$measure    # "raw" | "diff"
-DATE_SOURCE <- "20261015"
+TRIALS      <- params$trials     # "correct" | "alltrials"
+DATE_SOURCE <- NULL      # NULL = latest CSV; or pin a date, e.g. "20261031"
 
 # ==============================================================================
 # Auto-derived (do not edit)
@@ -56,8 +58,8 @@ n        <- length(included_participants)
 stim_col <- if (MEASURE == "diff") "contrast" else "stim"
 DATE_STR <- format(Sys.Date(), "%Y%m%d")
 
-csv_fname <- glue("{DATE_SOURCE}_{PARADIGM}_{n}p_flow_stim_{MEASURE}_allch_allwin_meanamp.csv")
-csv_path  <- file.path(DATA_ROOT, csv_fname)
+csv_path  <- find_stim_measures(DATA_ROOT, PARADIGM, "flow", MEASURE, TRIALS, DATE_SOURCE)
+csv_fname <- basename(csv_path)
 
 df_all <- load_cluster_data(csv_path, CONDITION_MAP, included_participants)
 
@@ -71,6 +73,7 @@ cat(glue(
 "**Paper**: FLOW  
 **Paradigm**: {toupper(PARADIGM)}  
 **Measure**: {toupper(MEASURE)}  
+**Trials**: {TRIALS}  
 **Rendered**: {DATE_STR}  
 **N participants**: {n}  
 **N tests**: {length(conditions_list)}  
@@ -173,7 +176,7 @@ knitr::kable(
 ```
 
 ```{r save-summary}
-out_fname <- glue("{OUTPUT_RESULTS}{PARADIGM}_flow_{MEASURE}_summary_{DATE_STR}.csv")
+out_fname <- glue("{OUTPUT_RESULTS}{PARADIGM}_flow_{MEASURE}_{TRIALS}_summary_{DATE_STR}.csv")
 write.csv(summary_df, out_fname, row.names = FALSE)
 cat("Saved summary ->", out_fname, "\n")
 ```

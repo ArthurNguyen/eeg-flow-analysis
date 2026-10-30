@@ -4,6 +4,7 @@ subtitle: "Linear mixed models: condition × action_past_hours"
 date: today
 params:
   paradigm: "active"
+  trials: "correct"     # "correct" (primary) | "alltrials" (sensitivity)
 format:
   html:
     toc: true
@@ -23,7 +24,8 @@ source("utils.R")
 source("config_load.R")
 
 PARADIGM    <- params$paradigm
-DATE_ERP    <- "20261015"
+TRIALS      <- params$trials     # "correct" | "alltrials"
+DATE_ERP    <- NULL          # NULL = latest ERP CSV; or pin a date, e.g. "20261031"
 DATE_ACTION <- "20261016"
 DATE_STR    <- format(Sys.Date(), "%Y%m%d")
 
@@ -74,13 +76,13 @@ if (PARADIGM_REAL == "active") {
 # ==============================================================================
 # Load ERP CSVs
 # ==============================================================================
-fname_stim <- glue("{DATE_ERP}_{PARADIGM_REAL}_{n_source}p_load_stim_raw_allch_allwin_meanamp.csv")
-df_stim    <- read.csv(file.path(DATA_ROOT, fname_stim)) %>%
+path_stim  <- find_stim_measures(DATA_ROOT, PARADIGM_REAL, "load", "raw", TRIALS, DATE_ERP)
+df_stim    <- read.csv(path_stim) %>%
   filter(participant %in% included_participants) %>%
   mutate(condition = factor(condition, levels = CONDITION_LEVELS))
 
-fname_diff <- glue("{DATE_ERP}_{PARADIGM_REAL}_{n_source}p_load_stim_diff_allch_allwin_meanamp.csv")
-df_diff <- read.csv(file.path(DATA_ROOT, fname_diff)) %>%
+path_diff  <- find_stim_measures(DATA_ROOT, PARADIGM_REAL, "load", "diff", TRIALS, DATE_ERP)
+df_diff <- read.csv(path_diff) %>%
   filter(participant %in% included_participants) %>%
   mutate(condition = factor(condition, levels = CONDITION_LEVELS))
 
@@ -108,6 +110,7 @@ cat("Low exp:", sum(df_action$experience == "low"),
 cat(glue(
 "**Paper**: LOAD — ERP × Action Experience
 **Paradigm**: {toupper(PARADIGM)}
+**Trials**: {TRIALS}
 **Analysis**: Linear regression: amplitude ~ condition * action_past_hours
 **Median split**: {round(median_score, 2)}h (low < median ≤ high)
 **N participants**: {n}
@@ -267,7 +270,7 @@ knitr::kable(summary_df, digits = 3,
 ```{r save-summary}
 write.csv(summary_df,
           file.path(OUTPUT_RESULTS,
-                    glue("{PARADIGM}_load_action_erp_summary_{DATE_STR}.csv")),
+                    glue("{PARADIGM}_load_action_erp_{TRIALS}_summary_{DATE_STR}.csv")),
           row.names = FALSE)
 cat("Summary saved.\n")
 ```

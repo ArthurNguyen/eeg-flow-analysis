@@ -8,6 +8,7 @@ params:
   stim: "target"
   laterality_row: "FC_C" # "F_FC" | "FC_C"
   window: "180-230ms"
+  trials: "correct"     # "correct" (primary) | "alltrials" (sensitivity)
 format:
   html:
     toc: true
@@ -38,7 +39,8 @@ source("config_load.R")
 PARADIGM    <- "active"
 MEASURE     <- "raw"
 LOCK        <- "stim"
-DATE_SOURCE <- "20261015"
+TRIALS      <- params$trials     # "correct" | "alltrials"
+DATE_SOURCE <- NULL      # NULL = latest CSV; or pin a date, e.g. "20261031"
 WINDOW      <- params$window
 STIM        <- params$stim
 
@@ -73,8 +75,8 @@ dir.create(OUTPUT_RESULTS, showWarnings = FALSE, recursive = TRUE)
 
 n         <- length(included_participants)
 n_source  <- length(INCLUDED_ACTIVE)  # toujours 48
-csv_fname <- glue("{DATE_SOURCE}_{PARADIGM}_{n_source}p_load_stim_{MEASURE}_allch_allwin_meanamp.csv")
-csv_path  <- file.path(DATA_ROOT, csv_fname)
+csv_path  <- find_stim_measures(DATA_ROOT, PARADIGM, "load", MEASURE, TRIALS, DATE_SOURCE)
+csv_fname <- basename(csv_path)
 
 df_all <- load_cluster_data(csv_path, CONDITION_MAP, included_participants)
 cat("Loaded:", nrow(df_all), "rows |", n_distinct(df_all$participant), "participants\n")
@@ -90,6 +92,8 @@ cat(glue(
 **Paradigm**: ACTIVE  
 **Stim**: {str_to_title(STIM)}  
 **Window**: {WINDOW}  
+**Trials**: {TRIALS}  
+**CSV**: {csv_fname}  
 **Electrodes**: {paste(ALL_CHANNELS, collapse=', ')}  
 **Mode**: {mode_label}  
 **Conditions**: {paste(CONDITION_LEVELS, collapse=' vs ')}  
@@ -425,7 +429,7 @@ for (label in names(apa_texts)) {
 ```
 
 ```{r save-summary}
-fname_suffix <- glue("{if (AGGREGATE_BY_LATERALITY) 'agg' else 'ind'}_{STIM}_{LATERALITY_ROW}")
+fname_suffix <- glue("{if (AGGREGATE_BY_LATERALITY) 'agg' else 'ind'}_{STIM}_{LATERALITY_ROW}_{TRIALS}")
 
 # ANOVA results (+ inclusion BF, matched to Effect where available)
 anova_tbl <- get_anova_table(res_rm, correction = "auto")
