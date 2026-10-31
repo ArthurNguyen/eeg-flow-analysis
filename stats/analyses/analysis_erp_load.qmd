@@ -38,7 +38,7 @@ COMPONENTS_WITH_ELECTRODE_BF <- c("N2")
 PARADIGM    <- params$paradigm
 MEASURE     <- params$measure
 TRIALS      <- params$trials     # "correct" | "alltrials"
-DATE_SOURCE <- NULL      # NULL = latest CSV; or pin a date, e.g. "20261031"
+DATE_SOURCE <- "20261031"       # NULL = latest CSV; or pin a date, e.g. "20261031"
 
 PARADIGM_REAL <- strsplit(PARADIGM, "-")[[1]][1]
 STUDY         <- if (PARADIGM_REAL == "active") "Active" else "Passive"

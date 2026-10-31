@@ -28,7 +28,7 @@ PARADIGM    <- "active"
 MEASURE     <- "raw"
 LOCK        <- "stim"
 TRIALS      <- params$trials     # "correct" | "alltrials"
-DATE_SOURCE <- NULL      # NULL = latest CSV; or pin a date, e.g. "20261031"
+DATE_SOURCE <- "20261031"        # NULL = latest CSV; or pin a date, e.g. "20261031"
 WINDOW      <- "350-750ms"
 CHANNELS    <- c("Fz", "Pz")
 

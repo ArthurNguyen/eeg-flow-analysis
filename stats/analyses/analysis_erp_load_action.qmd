@@ -25,7 +25,7 @@ source("config_load.R")
 
 PARADIGM    <- params$paradigm
 TRIALS      <- params$trials     # "correct" | "alltrials"
-DATE_ERP    <- NULL          # NULL = latest ERP CSV; or pin a date, e.g. "20261031"
+DATE_ERP    <- "20261031"           # NULL = latest ERP CSV; or pin a date, e.g. "20261031"
 DATE_ACTION <- "20261016"
 DATE_STR    <- format(Sys.Date(), "%Y%m%d")
 

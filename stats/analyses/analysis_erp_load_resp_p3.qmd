@@ -25,7 +25,7 @@ USE_ANOVA <- TRUE  # TRUE = 2-way RM ANOVA (condition x electrode) | FALSE = pai
 
 PARADIGM    <- "active"
 LOCK        <- "resp"
-DATE_SOURCE <- "20261015"
+DATE_SOURCE <- "20261031"
 CSD_LABEL   <- "NOCSD"
 BC_LABEL    <- "bc-200-100"
 CLUSTER     <- c("P1", "Pz", "P2", "POz")

@@ -38,11 +38,25 @@ BANDS      <- c("alpha", "low_beta", "high_beta", "theta")
 STUDY      <- if (PARADIGM == "active") "Active" else "Passive"
 DATE_STR   <- format(Sys.Date(), "%Y%m%d")
 
+# Continuous-epoch band power does not depend on step 8 (epoching), so these CSVs stay valid.
+# The file is found by date only (any N in its name), then restricted to the participants
+# included in this paper/paradigm — so a change in the inclusion list (e.g. S39 removed
+# from Load) cannot break the file lookup or let an excluded participant in.
 PARADIGM_CFG <- list(
-  active  = list(date_source = "20261016", n_label = glue("{length(INCLUDED_ACTIVE)}p")),
-  passive = list(date_source = "20261016", n_label = glue("{length(INCLUDED_PASSIVE)}p"))
+  active  = list(date_source = "20261016", included = INCLUDED_ACTIVE),
+  passive = list(date_source = "20261016", included = INCLUDED_PASSIVE)
 )
 cfg <- PARADIGM_CFG[[PARADIGM]]
+
+find_continuous_csv <- function(band) {
+  pat <- sprintf("^%s_[0-9]+p_continuous_%s_stats\\.csv$", cfg$date_source, band)
+  hits <- list.files(DATA_ROOT, pattern = pat)
+  if (length(hits) != 1) {
+    stop(sprintf("Expected 1 file matching %s in %s, found %d: %s",
+                 pat, DATA_ROOT, length(hits), paste(hits, collapse = ", ")))
+  }
+  hits
+}
 
 DATA_ROOT      <- glue("L:/EEG_Flow_data/Study_EEG_Flow_{STUDY}/derivatives_v2/outputs/measures/{PAPER}/freq/continuous/")
 OUTPUT_RESULTS <- glue("L:/EEG_Flow_data/Study_EEG_Flow_{STUDY}/derivatives_v2/outputs/stats/{PAPER}/freq_continuous/")
@@ -94,8 +108,12 @@ apa_texts_posthoc  <- list()
 for (band in BANDS) {
   cat(glue("\n## {toupper(band)} band\n\n"))
 
-  file_name <- glue("{cfg$date_source}_{cfg$n_label}_continuous_{band}_stats.csv")
+  file_name <- find_continuous_csv(band)
   data <- read.csv(file.path(DATA_ROOT, file_name), sep = ",")
+  n_file <- n_distinct(data$participant)
+  data <- data %>% filter(participant %in% cfg$included)
+  cat(glue("File: {file_name} ({n_file} participants in file, ",
+           "{n_distinct(data$participant)} included)\n\n"))
   data    <- prepare_data(data)
   df_band <- filter_data_band(data, ELECTRODES, COND1, COND2)
 

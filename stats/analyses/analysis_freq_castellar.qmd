@@ -35,7 +35,7 @@ METHODS <- c("castellar_exact", "castellar_trial")
 # Kept commented rather than deleted; re-enable if the pipeline changes and the
 # equivalence needs re-checking.
 
-DATE_SOURCE <- "20261016"
+DATE_SOURCE <- "20261031"
 
 # Matches save_stats_csv()'s naming convention in the regeneration notebook:
 # {date}_{PARADIGM}_{n}p_{PAPER}_CastellarBand-{band}_statsnorm.csv

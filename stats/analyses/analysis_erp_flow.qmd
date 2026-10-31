@@ -34,7 +34,7 @@ source("config_flow.R")
 PARADIGM    <- params$paradigm   # "active" | "passive"
 MEASURE     <- params$measure    # "raw" | "diff"
 TRIALS      <- params$trials     # "correct" | "alltrials"
-DATE_SOURCE <- NULL      # NULL = latest CSV; or pin a date, e.g. "20261031"
+DATE_SOURCE <- "20261031"        # NULL = latest CSV; or pin a date, e.g. "20261031"
 
 # ==============================================================================
 # Auto-derived (do not edit)

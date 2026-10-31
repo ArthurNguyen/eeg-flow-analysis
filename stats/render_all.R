@@ -16,6 +16,14 @@ RUN_BEHAVIOR <- FALSE
 RUN_FLOW     <- FALSE
 RUN_LOAD     <- TRUE
 
+# Stimulus-locked trial selection — which variant(s) to render.
+# "correct" = primary analysis (targets: hits; standards/novels: correct rejections)
+# "alltrials" = sensitivity analysis. Use c("correct", "alltrials") to render both.
+# Applies only to the stimulus-locked reports (ERP flow/load, Castellar stim,
+# laterality, action); response-locked, frequency and behavior reports have one variant.
+TRIALS_SET <- c("correct")
+stopifnot(all(TRIALS_SET %in% c("correct", "alltrials")))
+
 # Behavior sub-toggles
 RUN_BEHAV_QUEST     <- FALSE   # questionnaires (flow + load, active + passive)
 RUN_BEHAV_ODDBALL   <- FALSE   # oddball response (flow + load)
@@ -29,10 +37,10 @@ RUN_FLOW_FREQ_CONTINUOUS <- FALSE  # analysis_freq_continuous.qmd (active + pass
 
 # Load sub-toggles
 RUN_LOAD_ERP             <- FALSE  # analysis_erp_load.qmd (active + passive, raw + diff)
-RUN_LOAD_LATERALITY      <- TRUE  # analysis_erp_load_laterality.qmd
+RUN_LOAD_LATERALITY      <- FALSE  # analysis_erp_load_laterality.qmd
 RUN_LOAD_RESP_P3         <- FALSE  # analysis_erp_load_resp_p3.qmd
 RUN_LOAD_ACTION          <- FALSE  # analysis_erp_load_action.qmd (active + passive)
-RUN_LOAD_FREQ_CONTINUOUS <- FALSE  # analysis_freq_continuous.qmd (active only)
+RUN_LOAD_FREQ_CONTINUOUS <- TRUE  # analysis_freq_continuous.qmd (active only)
 
 # ==============================================================================
 # PATHS
@@ -102,28 +110,30 @@ if (RUN_LOAD) {
       list(paradigm = "active",  measure = "raw",  out_dir = RESULTS_LOAD_ACTIVE),
       list(paradigm = "active",  measure = "diff", out_dir = RESULTS_LOAD_ACTIVE)
     )
-    for (combo in load_combos) {
+    for (trials in TRIALS_SET) for (combo in load_combos) {
       render_and_move(
         qmd_file       = "analyses/analysis_erp_load.qmd",
         out_dir        = combo$out_dir,
-        out_name       = glue("{combo$paradigm}_load_{combo$measure}_{DATE_STR}.html"),
-        execute_params = list(paradigm = combo$paradigm, measure = combo$measure)
+        out_name       = glue("{combo$paradigm}_load_{combo$measure}_{trials}_{DATE_STR}.html"),
+        execute_params = list(paradigm = combo$paradigm, measure = combo$measure,
+                              trials = trials)
       )
     }
   }
 
   if (RUN_LOAD_LATERALITY) {
-    for (stim in c("target", "novel")) {
+    for (trials in TRIALS_SET) for (stim in c("target", "novel")) {
       render_and_move(
         qmd_file       = "analyses/analysis_erp_load_laterality.qmd",
         out_dir        = file.path(RESULTS_LOAD_ACTIVE, "laterality"),
-        out_name       = glue("active_load_laterality_ind_{stim}_FC_C_{DATE_STR}.html"),
+        out_name       = glue("active_load_laterality_ind_{stim}_FC_C_{trials}_{DATE_STR}.html"),
         execute_params = list(
           aggregate_by_laterality = FALSE,
           stim                    = stim,
           cohort                  = "full",
           laterality_row          = "FC_C",
-          window                  = if (stim == "target") "180-230ms" else "150-220ms"
+          window                  = if (stim == "target") "180-230ms" else "150-220ms",
+          trials                  = trials
         )
       )
     }
@@ -138,14 +148,14 @@ if (RUN_LOAD) {
   }
 
   if (RUN_LOAD_ACTION) {
-    for (paradigm in c("active", "passive")) {
+    for (trials in TRIALS_SET) for (paradigm in c("active", "passive")) {
       render_and_move(
         qmd_file       = "analyses/analysis_erp_load_action.qmd",
         out_dir        = file.path(
           if (paradigm == "active") RESULTS_LOAD_ACTIVE else RESULTS_LOAD_PASSIVE,
           "correlations_action"),
-        out_name       = glue("{paradigm}_load_action_erp_{DATE_STR}.html"),
-        execute_params = list(paradigm = paradigm)
+        out_name       = glue("{paradigm}_load_action_erp_{trials}_{DATE_STR}.html"),
+        execute_params = list(paradigm = paradigm, trials = trials)
       )
     }
   }
@@ -180,22 +190,26 @@ if (RUN_FLOW) {
       list(paradigm = "active",  measure = "raw",  out_dir = RESULTS_FLOW_ACTIVE),
       list(paradigm = "active",  measure = "diff", out_dir = RESULTS_FLOW_ACTIVE)
     )
-    for (combo in flow_combos) {
+    for (trials in TRIALS_SET) for (combo in flow_combos) {
       render_and_move(
         qmd_file       = "analyses/analysis_erp_flow.qmd",
         out_dir        = combo$out_dir,
-        out_name       = glue("{combo$paradigm}_flow_{combo$measure}_{DATE_STR}.html"),
-        execute_params = list(paradigm = combo$paradigm, measure = combo$measure)
+        out_name       = glue("{combo$paradigm}_flow_{combo$measure}_{trials}_{DATE_STR}.html"),
+        execute_params = list(paradigm = combo$paradigm, measure = combo$measure,
+                              trials = trials)
       )
     }
   }
 
   if (RUN_FLOW_CASTELLAR) {
-    render_and_move(
-      qmd_file = "analyses/analysis_erp_flow_castellar_stim.qmd",
-      out_dir  = file.path(RESULTS_FLOW_ACTIVE, "castellar"),
-      out_name = glue("active_flow_castellar_stim_{DATE_STR}.html")
-    )
+    for (trials in TRIALS_SET) {
+      render_and_move(
+        qmd_file       = "analyses/analysis_erp_flow_castellar_stim.qmd",
+        out_dir        = file.path(RESULTS_FLOW_ACTIVE, "castellar"),
+        out_name       = glue("active_flow_castellar_stim_{trials}_{DATE_STR}.html"),
+        execute_params = list(trials = trials)
+      )
+    }
     render_and_move(
       qmd_file = "analyses/analysis_erp_flow_castellar_resp.qmd",
       out_dir  = file.path(RESULTS_FLOW_ACTIVE, "castellar"),
